@@ -13,6 +13,7 @@ import ReviewsView from "./ReviewsView";
 import ReportsView from "./ReportsView";
 import MaintenanceView from "./MaintenanceView";
 import ClientsView from "./ClientsView";
+import AdminPaymentsPage from "./AdminPaymentsPage";
 
 import AuthPage from "../AuthPage";
 import { AdminUIProvider } from "./context/AdminUIContext";
@@ -22,24 +23,15 @@ const AdminDashboard = ({ initialView = "dashboard" }) => {
   const location = useLocation();
 
   // If we navigated here with: navigate("/admin", { state: { activeView: "clients" } })
-// Support both patterns: activeView (old) and initialView (new)
-const forcedView =
-  location.state?.activeView ||
-  location.state?.initialView ||
-  null;
+  // Support both patterns: activeView (old) and initialView (new)
+  const forcedView =
+    location.state?.activeView || location.state?.initialView || null;
 
-const [activeView, setActiveView] = useState(
-  forcedView || initialView || "dashboard"
-);
+  const [activeView, setActiveView] = useState(
+    forcedView || initialView || "dashboard"
+  );
 
-// Sync state if navigation changes it (important for switching from Payments page)
-useEffect(() => {
-  if (forcedView && forcedView !== activeView) {
-    setActiveView(forcedView);
-  }
-}, [forcedView, activeView]);
-
-  // Keep activeView in sync if navigation state changes
+  // Sync state if navigation changes it (important for switching from Payments page)
   useEffect(() => {
     if (forcedView && forcedView !== activeView) {
       setActiveView(forcedView);
@@ -77,6 +69,13 @@ useEffect(() => {
         return <ReportsView />;
       case "maintenance":
         return <MaintenanceView />;
+      case "payments":
+        return (
+          <AdminPaymentsPage
+            embedded
+            onChangeView={setActiveView}
+          />
+        );
       default:
         return <DashboardHome onChangeView={setActiveView} />;
     }

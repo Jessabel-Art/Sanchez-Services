@@ -5,22 +5,15 @@ import { Button } from "@/components/ui/button";
 import { Menu, X, Phone } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import headerLogo from "@/assets/logo/logo-primary.png";
-import { useAdminAuth } from "@/pages/admin/hooks/useAdminAuth";
-
-// Hard-coded admin emails (must be lowercase)
-const ADMIN_EMAILS = [
-  "jessabel.santos@gmail.com",
-  "sanchezservices24@yahoo.com",
-];
+import { useAuth } from "@/context/AuthContext";
+import { isEmailAdmin } from "@/lib/adminAllowlist";
 
 const Header = () => {
   const [isOpen, setIsOpen] = useState(false);
   const location = useLocation();
 
-  // We still use the hook for auth state, but we *don’t* trust its isAdmin flag
-  const { user } = useAdminAuth();
-  const emailLower = (user?.email || "").toLowerCase();
-  const showAdminLink = !!user && ADMIN_EMAILS.includes(emailLower);
+  const { user } = useAuth();
+  const showAdminLink = !!user && isEmailAdmin(user.email);
 
   const handleCallClick = () => {
     window.location.href = "tel:14016586708";

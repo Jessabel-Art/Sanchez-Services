@@ -1,5 +1,6 @@
 // pages/admin/AuthPage.jsx
 import React, { useState } from "react";
+import { Link } from "react-router-dom";
 import { signInWithEmailAndPassword } from "firebase/auth";
 import { auth } from "../../lib/firebase";
 import { upsertProfile, updateProfileLastLogin } from "@/lib/profileModel";
@@ -99,13 +100,12 @@ const AuthPage = () => {
           </button>
         </form>
 
-        <button
-          type="button"
-          onClick={() => (window.location.href = "/")}
-          className="mt-4 w-full text-center text-xs text-gray-500 hover:text-gray-700"
+        <Link
+          to="/"
+          className="mt-4 block text-center text-xs text-gray-500 hover:text-gray-700"
         >
           ← Back to website
-        </button>
+        </Link>
       </div>
     </div>
   );

@@ -2,11 +2,7 @@
 import React from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
-
-const ADMIN_EMAIL = import.meta.env.VITE_ADMIN_EMAIL || 'jessabel.santos@gmail.com';
-
-// Add extra admins here (lowercase for easy matching)
-const EXTRA_ADMINS = ['sanchezservices24@yahoo.com'];
+import { buildAdminAllowlist } from '@/lib/adminAllowlist';
 
 function FullPageLoader() {
   return (
@@ -22,11 +18,7 @@ export default function AdminRoute({ children }) {
 
   if (!authReady) return <FullPageLoader />;
 
-  const allowlist = new Set([
-    (ADMIN_EMAIL || '').toLowerCase(),
-    ...EXTRA_ADMINS.map((e) => e.toLowerCase()),
-  ]);
-
+  const allowlist = buildAdminAllowlist();
   const isAdmin = !!user && !!user.email && allowlist.has(user.email.toLowerCase());
 
   if (!isAdmin) {

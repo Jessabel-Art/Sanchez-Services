@@ -20,10 +20,7 @@ import TermsOfServicePage from '@/pages/TermsOfServicePage';
 import BrandStylePage from '@/pages/BrandStylePage';
 import AdminDashboard from '@/pages/admin/AdminDashboard';
 import AuthPage from '@/pages/AuthPage';
-import ClientBookingsView from '@/pages/admin/ClientBookingsView';
-import BookingsView from '@/pages/admin/BookingsView';
-import AdminPaymentsPage from '@/pages/admin/AdminPaymentsPage';
-import ClientPortalPage from '@/pages/ClientPortalPage.jsx'; 
+import ClientPortalPage from '@/pages/ClientPortalPage.jsx';
 import PaymentCenterPage from "@/pages/PaymentCenterPage";
 import PaymentConfirmationPage from "@/pages/PaymentConfirmationPage";
 
@@ -82,31 +79,19 @@ function AppShell() {
 
           <Route
             path="/admin/bookings"
-            element={
-              <AdminRoute>
-                <BookingsView />
-              </AdminRoute>
-            }
+            element={<Navigate to="/admin" state={{ initialView: "bookings" }} replace />}
           />
 
           <Route
             path="/admin/payments"
-            element={
-              <AdminRoute>
-                <AdminPaymentsPage />
-              </AdminRoute>
-            }
+            element={<Navigate to="/admin" state={{ initialView: "payments" }} replace />}
           />
 
           <Route path="/payment-confirmation" element={<PaymentConfirmationPage />} />
 
           <Route
             path="/admin/client-bookings"
-            element={
-              <AdminRoute>
-                <ClientBookingsView />
-              </AdminRoute>
-            }
+            element={<Navigate to="/admin" state={{ initialView: "bookings" }} replace />}
           />
 
           <Route path="/contact" element={<ContactPage />} />
