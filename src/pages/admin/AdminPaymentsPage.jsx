@@ -874,36 +874,36 @@ const AdminPaymentsPage = ({ embedded = false, onChangeView }) => {
   const content = (
     <>
       <main className="flex-1 px-6 py-4 lg:px-10 lg:py-6 bg-[#FFF7FB]">
-            {/* Page header */}
-            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-5">
-              <div>
-                <p className="text-xs uppercase tracking-[0.14em] text-plum/60 font-semibold">
-                  Admin billing
-                </p>
-                <h1 className="text-2xl md:text-3xl font-bold text-plum">
-                  Payments &amp; Deposits
-                </h1>
-                <p className="text-xs md:text-sm text-plum/70 max-w-xl">
-                  Review deposits, balances, and payment methods across all
-                  bookings.
-                </p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="flex items-center gap-2 rounded-full"
-                  onClick={handleExportCsv}
-                  disabled={!rows.length}
-                >
-                  <FileDown className="w-4 h-4" />
-                  Export CSV
-                </Button>
-              </div>
-            </div>
+        {/* Page header */}
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-5">
+          <div>
+            <p className="text-xs uppercase tracking-[0.14em] text-plum/60 font-semibold">
+              Admin billing
+            </p>
+            <h1 className="text-2xl md:text-3xl font-bold text-plum">
+              Payments &amp; Deposits
+            </h1>
+            <p className="text-xs md:text-sm text-plum/70 max-w-xl">
+              Review deposits, balances, and payment methods across all
+              bookings.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="flex items-center gap-2 rounded-full"
+              onClick={handleExportCsv}
+              disabled={!rows.length}
+            >
+              <FileDown className="w-4 h-4" />
+              Export CSV
+            </Button>
+          </div>
+        </div>
 
-            {/* KPI strip */}
-            <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 mb-5">
+        {/* KPI strip */}
+        <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 mb-5">
               <div className="bg-white border border-[#F1D8E8] rounded-2xl px-4 py-3 flex flex-col gap-1 shadow-sm">
                 <div className="flex items-center justify-between text-[11px] text-plum/70">
                   <span>Collected (selected period)</span>
@@ -1359,13 +1359,13 @@ const AdminPaymentsPage = ({ embedded = false, onChangeView }) => {
             </Card>
           </main>
 
-          {/* Edit modal */}
-          <Dialog
-            open={isEditOpen}
-            onOpenChange={(open) => {
-              if (!open) setEditingRow(null);
-            }}
-          >
+        {/* Edit modal */}
+        <Dialog
+          open={isEditOpen}
+          onOpenChange={(open) => {
+            if (!open) setEditingRow(null);
+          }}
+        >
           <DialogContent className="max-w-md bg-white">
             <DialogHeader>
               <DialogTitle className="text-plum text-sm">
@@ -1540,8 +1540,8 @@ const AdminPaymentsPage = ({ embedded = false, onChangeView }) => {
                 Save changes
               </Button>
             </DialogFooter>
-            </DialogContent>
-          </Dialog>
+          </DialogContent>
+        </Dialog>
     </>
   );
 
