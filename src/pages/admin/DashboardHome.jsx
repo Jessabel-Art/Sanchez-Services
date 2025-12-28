@@ -8,6 +8,7 @@ import {
   where,
   orderBy,
   Timestamp,
+  limit,
 } from "firebase/firestore";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -71,6 +72,7 @@ export default function DashboardHome({ onChangeView }) {
   const { isAdmin, authReady } = useAdminAuth();
   const [rows, setRows] = React.useState([]);
   const [loading, setLoading] = React.useState(true);
+  const [pendingApprovalsCount, setPendingApprovalsCount] = React.useState(0);
 
   // ---- Firestore subscription: this month + next 7 days (auth-gated) ----
   React.useEffect(() => {
@@ -111,6 +113,35 @@ export default function DashboardHome({ onChangeView }) {
 
     return () => unsub();
   }, [authReady, isAdmin, toast]);
+
+  // ---- Pending approvals: all future pending bookings (status == pending, startAt >= now) ----
+  React.useEffect(() => {
+    if (!authReady || !isAdmin) return;
+
+    const now = new Date();
+    const qRef = query(
+      collection(db, "bookings"),
+      where("status", "==", "pending"),
+      where("startAt", ">=", Timestamp.fromDate(now)),
+      orderBy("startAt", "asc"),
+      limit(200)
+    );
+
+    const unsub = onSnapshot(
+      qRef,
+      (snap) => {
+        setPendingApprovalsCount(snap.size);
+        if (process.env.NODE_ENV !== "production") {
+          console.log("[dashboard pending] pending count", snap.size);
+        }
+      },
+      (err) => {
+        console.error("dashboard pending error", err);
+      }
+    );
+
+    return () => unsub();
+  }, [authReady, isAdmin]);
 
   // ---- Analytics / derived views ----
   const analytics = React.useMemo(() => {
@@ -501,14 +532,14 @@ export default function DashboardHome({ onChangeView }) {
                 <span className="w-2 h-2 rounded-full bg-[#FACC15]" />
                 Pending approvals
               </div>
-              {pipeline.pending > 0 && (
+              {pendingApprovalsCount > 0 && (
                 <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-[#F97316] text-white text-[10px]">
                   !
                 </span>
               )}
             </div>
             <div className="text-2xl font-semibold text-[#92400E]">
-              {pipeline.pending}
+              {pendingApprovalsCount}
             </div>
             <p className="text-[11px] text-[#92400E]/60 mt-1">
               Requests waiting on your decision.

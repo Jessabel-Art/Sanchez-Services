@@ -21,7 +21,7 @@ import {
 } from "@/components/ui/dialog";
 
 import { db, auth, functions } from "@/lib/firebase";
-import { collection, onSnapshot, query, where } from "firebase/firestore";
+import { collection, doc, getDoc, onSnapshot, query, where } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 
 import logoPrimary from "@/assets/logo/logo-primary.png";
@@ -33,6 +33,21 @@ function toDate(tsLike) {
   if (tsLike instanceof Date) return tsLike;
   const d = new Date(tsLike);
   return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function normalizePhone(raw) {
+  const digits = String(raw || "").replace(/\D+/g, "");
+  if (digits.length === 11 && digits.startsWith("1")) return digits.slice(1);
+  return digits || null;
+}
+
+function dedupeById(rows) {
+  const map = new Map();
+  rows.forEach((r) => {
+    if (!r || !r.id) return;
+    map.set(r.id, r);
+  });
+  return Array.from(map.values());
 }
 
 /* ------------------------ address formatter ---------------------- */
@@ -612,39 +627,170 @@ const PaymentCenterPage = () => {
   const [paying, setPaying] = useState(false);
   const [payError, setPayError] = useState(null);
 
-  // subscribe to this user's bookings
+  // subscribe to this user's bookings (uid + email + phone fallbacks)
   useEffect(() => {
-    const user = auth.currentUser;
-    if (!user) {
+    let isActive = true;
+    const unsubs = [];
+
+    const sortRows = (rows) => {
+      const sorted = [...rows];
+      sorted.sort((a, b) => {
+        const aDate = toDate(a.startAt || a.scheduledAt) || new Date(0);
+        const bDate = toDate(b.startAt || b.scheduledAt) || new Date(0);
+        return bDate.getTime() - aDate.getTime();
+      });
+      return sorted;
+    };
+
+    const sourceCountsRef = { current: { uid: 0, email: 0, phone: 0 } };
+
+    const mergeBookingsFromSource = (rows, sourceKey) => {
+      if (!isActive) return;
+      setBookings((prev) => {
+        const merged = dedupeById([...prev, ...rows]);
+        const sorted = sortRows(merged);
+        if (process.env.NODE_ENV !== "production") {
+          if (sourceKey) {
+            sourceCountsRef.current[sourceKey] = rows.length;
+          }
+          const counts = sourceCountsRef.current;
+          console.log("[payment-center bookings] source counts", {
+            uidDocs: counts.uid,
+            emailDocs: counts.email,
+            phoneDocs: counts.phone,
+            mergedTotal: sorted.length,
+          });
+        }
+        return sorted;
+      });
       setLoading(false);
-      setBookings([]);
-      return;
-    }
+      setLoadError(null);
+    };
 
-    const bookingsRef = collection(db, "bookings");
-    const q = query(bookingsRef, where("userId", "==", user.uid));
+    const attachEmailListeners = (emailLower) => {
+      if (!emailLower) return;
+      const qTop = query(
+        collection(db, "bookings"),
+        where("contactEmailLower", "==", emailLower)
+      );
+      const qLegacy = query(
+        collection(db, "bookings"),
+        where("contact.emailLower", "==", emailLower)
+      );
 
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-        rows.sort((a, b) => {
-          const aDate = toDate(a.startAt || a.scheduledAt) || new Date(0);
-          const bDate = toDate(b.startAt || b.scheduledAt) || new Date(0);
-          return bDate.getTime() - aDate.getTime();
+      [qTop, qLegacy].forEach((qRef) => {
+        const unsub = onSnapshot(
+          qRef,
+          (snap) => {
+            const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+            mergeBookingsFromSource(rows, "email");
+          },
+          (err) => {
+            console.error("PaymentCenter email listener error", err);
+            setLoadError(err?.message || String(err));
+            setLoading(false);
+          }
+        );
+        unsubs.push(unsub);
+      });
+    };
+
+    const attachPhoneListeners = (normalizedPhone, rawPhone) => {
+      if (!normalizedPhone) return;
+
+      const qTop = query(
+        collection(db, "bookings"),
+        where("contactPhoneNormalized", "==", normalizedPhone)
+      );
+      const qLegacyNorm = query(
+        collection(db, "bookings"),
+        where("contact.phoneNormalized", "==", normalizedPhone)
+      );
+      const qLegacyDigits = query(
+        collection(db, "bookings"),
+        where("contact.phone", "==", normalizedPhone)
+      );
+      const qLegacyRaw = rawPhone
+        ? query(
+            collection(db, "bookings"),
+            where("contact.phoneRaw", "==", rawPhone)
+          )
+        : null;
+
+      [qTop, qLegacyNorm, qLegacyDigits, qLegacyRaw]
+        .filter(Boolean)
+        .forEach((qRef) => {
+          const unsub = onSnapshot(
+            qRef,
+            (snap) => {
+              const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+              mergeBookingsFromSource(rows, "phone");
+            },
+            (err) => {
+              console.error("PaymentCenter phone listener error", err);
+              setLoadError(err?.message || String(err));
+              setLoading(false);
+            }
+          );
+          unsubs.push(unsub);
         });
-        setBookings(rows);
-        setLoading(false);
-        setLoadError(null);
-      },
-      (err) => {
-        console.error("PaymentCenter bookings error", err);
-        setLoadError(err?.message || String(err));
-        setLoading(false);
-      }
-    );
+    };
 
-    return () => unsub();
+    const run = async () => {
+      const user = auth.currentUser;
+      if (!user) {
+        setLoading(false);
+        setBookings([]);
+        return;
+      }
+
+      let emailLower = (user.email || "").toLowerCase();
+      let phoneRaw = user.phoneNumber || "";
+
+      try {
+        const profileSnap = await getDoc(doc(db, "users", user.uid));
+        if (profileSnap.exists()) {
+          const data = profileSnap.data() || {};
+          emailLower = (data.email || user.email || "").toLowerCase();
+          phoneRaw = data.phone || user.phoneNumber || "";
+        }
+      } catch (err) {
+        console.warn("PaymentCenter profile read failed", err);
+      }
+
+      const normalizedPhone = normalizePhone(phoneRaw);
+
+      const bookingsRef = collection(db, "bookings");
+      const qUid = query(bookingsRef, where("userId", "==", user.uid));
+
+      const unsubUid = onSnapshot(
+        qUid,
+        (snap) => {
+          const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+          mergeBookingsFromSource(rows, "uid");
+        },
+        (err) => {
+          console.error("PaymentCenter bookings error", err);
+          setLoadError(err?.message || String(err));
+          setLoading(false);
+        }
+      );
+      unsubs.push(unsubUid);
+
+      attachEmailListeners(emailLower);
+      attachPhoneListeners(normalizedPhone, phoneRaw);
+    };
+
+    run();
+
+    return () => {
+      isActive = false;
+      unsubs.forEach((u) => {
+        try {
+          u();
+        } catch {}
+      });
+    };
   }, []);
 
   const now = new Date();

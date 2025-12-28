@@ -394,10 +394,99 @@ export default function ClientPortalPage() {
         const userId = user.uid;
         const emailLower = (user.email || "").toLowerCase();
 
+        // One-time claim of prior guest bookings that match this user's email/phone
+        const claimedOnceRef = { current: false };
+        const claimGuestBookings = async () => {
+          if (claimedOnceRef.current) return;
+          claimedOnceRef.current = true;
+          try {
+            const phoneNormalized = (() => {
+              const digits = String(phoneFromProfile || "").replace(/\D+/g, "");
+              if (digits.length === 11 && digits.startsWith("1")) return digits.slice(1);
+              return digits || null;
+            })();
+
+            const filters = [];
+            if (emailLower) {
+              filters.push(where("contactEmailLower", "==", emailLower));
+              filters.push(where("contact.emailLower", "==", emailLower));
+            }
+            if (phoneNormalized) {
+              filters.push(where("contactPhoneNormalized", "==", phoneNormalized));
+              filters.push(where("contact.phoneNormalized", "==", phoneNormalized));
+              filters.push(where("contact.phone", "==", phoneNormalized));
+            }
+
+            if (!filters.length) return;
+
+            const baseCollection = collection(db, "bookings");
+            // Query for userId == null to avoid touching owned docs
+            const queries = filters.map((f) =>
+              query(baseCollection, where("userId", "==", null), f, limit(QUERY_LIMIT))
+            );
+
+            const snapshots = await Promise.all(queries.map((q) => getDocs(q)));
+            const toClaim = dedupeById(
+              snapshots.flatMap((snap) => snap.docs.map((d) => ({ id: d.id, ...d.data() })))
+            );
+
+            if (!toClaim.length) {
+              if (process.env.NODE_ENV !== "production") {
+                console.log("[client-portal claim] none found");
+              }
+              return;
+            }
+
+            const claims = toClaim.map(async (row) => {
+              if (row.userId) return; // already claimed by someone
+              const ref = doc(db, "bookings", row.id);
+              const nextOwnerKeys = Array.isArray(row.ownerKeys) ? row.ownerKeys.slice() : [];
+              const ownerKey = `uid:${userId}`;
+              if (!nextOwnerKeys.includes(ownerKey)) nextOwnerKeys.push(ownerKey);
+              await updateDoc(ref, {
+                userId,
+                ownerKeys: nextOwnerKeys,
+                updatedAt: serverTimestamp(),
+              });
+            });
+            await Promise.all(claims);
+
+            if (process.env.NODE_ENV !== "production") {
+              console.log("[client-portal claim] claimed bookings", { count: toClaim.length });
+            }
+          } catch (claimErr) {
+            console.error("[client-portal claim] error", claimErr);
+          }
+        };
+
+        await claimGuestBookings();
+
         // Attach listeners conditionally to avoid permission errors.
         const emailListenerAttached = { current: false };
         const phoneListenerAttached = { current: false };
         const ownerListenerAttached = { current: false };
+        const sourceCountsRef = { current: { uid: 0, email: 0, phone: 0, ownerKey: 0 } };
+
+        const mergeBookingsFromSource = (rows, sourceKey) => {
+          setBookings((prev) => {
+            const merged = dedupeById([...prev, ...rows]);
+            if (process.env.NODE_ENV !== "production") {
+              if (sourceKey) {
+                sourceCountsRef.current[sourceKey] = rows.length;
+              }
+              const counts = sourceCountsRef.current;
+              console.log("[client-portal bookings] source counts", {
+                uidDocs: counts.uid,
+                emailDocs: counts.email,
+                phoneDocs: counts.phone,
+                ownerKeyDocs: counts.ownerKey,
+                mergedTotal: merged.length,
+              });
+            }
+            return merged;
+          });
+          setLoadingBookings(false);
+        };
 
         const attachOwnerListener = () => {
           if (ownerListenerAttached.current) return;
@@ -412,8 +501,7 @@ export default function ClientPortalPage() {
             qByOwnerKey,
             (snap) => {
               const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-              setBookings((prev) => dedupeById([...prev, ...rows]));
-              setLoadingBookings(false);
+              mergeBookingsFromSource(rows, "ownerKey");
             },
             (err) => {
               console.error(err);
@@ -443,8 +531,7 @@ export default function ClientPortalPage() {
             qByEmailTop,
             (snap) => {
               const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-              setBookings((prev) => dedupeById([...prev, ...rows]));
-              setLoadingBookings(false);
+              mergeBookingsFromSource(rows, "email");
 
               // If email listener also finds nothing, fall back to ownerKeys
               if (snap.empty && !ownerListenerAttached.current) {
@@ -461,8 +548,7 @@ export default function ClientPortalPage() {
             qByEmailLegacy,
             (snap) => {
               const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-              setBookings((prev) => dedupeById([...prev, ...rows]));
-              setLoadingBookings(false);
+              mergeBookingsFromSource(rows, "email");
             },
             (err) => {
               console.error(err);
@@ -518,8 +604,7 @@ export default function ClientPortalPage() {
                 q,
                 (snap) => {
                   const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-                  setBookings((prev) => dedupeById([...prev, ...rows]));
-                  setLoadingBookings(false);
+                  mergeBookingsFromSource(rows, "phone");
                 },
                 (err) => {
                   console.error(err);
@@ -542,14 +627,12 @@ export default function ClientPortalPage() {
           qByUidStart,
           (snap) => {
             const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-            setBookings((prev) => dedupeById([...prev, ...rows]));
-            setLoadingBookings(false);
+            mergeBookingsFromSource(rows, "uid");
 
-            // If primary returned nothing, try email-based listener
-            if (snap.empty && !emailListenerAttached.current) {
+            // Always attach email + phone fallbacks when available
+            if (!emailListenerAttached.current) {
               attachEmailListener();
             }
-            // Also attach phone-based listener using profile phone
             const raw = phoneFromProfile || "";
             const np = (() => {
               const digits = String(raw).replace(/\D+/g, "");
@@ -564,6 +647,18 @@ export default function ClientPortalPage() {
           }
         );
         unsubsRef.current.push(u1);
+
+        // Attach email/phone fallbacks immediately when profile has them
+        if (!emailListenerAttached.current) {
+          attachEmailListener();
+        }
+        const rawPhoneNow = phoneFromProfile || "";
+        const npNow = (() => {
+          const digits = String(rawPhoneNow).replace(/\D+/g, "");
+          if (digits.length === 11 && digits.startsWith("1")) return digits.slice(1);
+          return digits;
+        })();
+        if (npNow) attachPhoneListener(npNow, rawPhoneNow);
 
         // addresses listener
         const uAddr = onSnapshot(
