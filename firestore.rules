@@ -180,44 +180,37 @@ service cloud.firestore {
       ];
 
       // Ensure no keys changed besides allowed mutable ones
-      let oldKeys = old.keys();
-      let newKeys = neu.keys();
-
-      let keysUnchanged = oldKeys.hasAll(newKeys.removeAll(allowedMutableFields)) &&
-                          newKeys.hasAll(oldKeys.removeAll(allowedMutableFields));
+      let keysUnchanged =
+        old.keys().hasAll(neu.keys().removeAll(allowedMutableFields)) &&
+        neu.keys().hasAll(old.keys().removeAll(allowedMutableFields));
 
       // Review constraints: allow setting ONCE only (prevents edits/abuse)
-      let reviewOk = true;
-
-      // reviewId: can set if old is null/missing; cannot change once set
-      if ("reviewId" in neu) {
-        reviewOk = reviewOk &&
+      // Convert conditional checks into pure boolean expressions (no control flow)
+      let reviewOk =
+        (
+          !("reviewId" in neu) ||
           (
-            !("reviewId" in old) || old.reviewId == null
-          ) &&
-          (neu.reviewId is string) &&
-          (neu.reviewId.size() > 0);
-      }
-
-      // reviewRating: can set if old is null/missing; must be 1..5
-      if ("reviewRating" in neu) {
-        reviewOk = reviewOk &&
+            (!("reviewId" in old) || old.reviewId == null) &&
+            (neu.reviewId is string) &&
+            (neu.reviewId.size() > 0)
+          )
+        ) &&
+        (
+          !("reviewRating" in neu) ||
           (
-            !("reviewRating" in old) || old.reviewRating == null
-          ) &&
-          (neu.reviewRating is int) &&
-          (neu.reviewRating >= 1) &&
-          (neu.reviewRating <= 5);
-      }
-
-      // reviewLeftAt: can set if old is null/missing; must be timestamp if provided
-      if ("reviewLeftAt" in neu) {
-        reviewOk = reviewOk &&
+            (!("reviewRating" in old) || old.reviewRating == null) &&
+            (neu.reviewRating is int) &&
+            (neu.reviewRating >= 1) &&
+            (neu.reviewRating <= 5)
+          )
+        ) &&
+        (
+          !("reviewLeftAt" in neu) ||
           (
-            !("reviewLeftAt" in old) || old.reviewLeftAt == null
-          ) &&
-          isTimestamp(neu.reviewLeftAt);
-      }
+            (!("reviewLeftAt" in old) || old.reviewLeftAt == null) &&
+            isTimestamp(neu.reviewLeftAt)
+          )
+        );
 
       return unchangedCritical && statusOk && keysUnchanged && reviewOk;
     }
