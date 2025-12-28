@@ -669,101 +669,6 @@ const PaymentCenterPage = () => {
       setLoadError(null);
     };
 
-    const attachEmailListeners = (emailLower) => {
-      if (!emailLower) return;
-      const qTop = query(
-        collection(db, "bookings"),
-        where("contactEmailLower", "==", emailLower)
-      );
-      const qLegacy = query(
-        collection(db, "bookings"),
-        where("contact.emailLower", "==", emailLower)
-      );
-
-      [qTop, qLegacy].forEach((qRef) => {
-        const unsub = onSnapshot(
-          qRef,
-          (snap) => {
-            const rows = snap.docs.map((d) => normalizeBookingForRead({ id: d.id, ...d.data() }));
-            mergeBookingsFromSource(rows, "email");
-          },
-          (err) => {
-            console.error("[payment-center] email query error", {
-              code: err?.code,
-              message: err?.message,
-              queryType: "email",
-            });
-            setLoadError(err?.message || String(err));
-            setLoading(false);
-            if (process.env.NODE_ENV !== "production") {
-              const errorCode = err?.code || "";
-              if (errorCode === "permission-denied" || errorCode === "failed-precondition") {
-                setFirestoreErrors((prev) => [
-                  ...prev,
-                  { queryType: "email", code: errorCode, message: err?.message || String(err) },
-                ]);
-              }
-            }
-          }
-        );
-        unsubs.push(unsub);
-      });
-    };
-
-    const attachPhoneListeners = (normalizedPhone, rawPhone) => {
-      if (!normalizedPhone) return;
-
-      const qTop = query(
-        collection(db, "bookings"),
-        where("contactPhoneNormalized", "==", normalizedPhone)
-      );
-      const qLegacyNorm = query(
-        collection(db, "bookings"),
-        where("contact.phoneNormalized", "==", normalizedPhone)
-      );
-      const qLegacyDigits = query(
-        collection(db, "bookings"),
-        where("contact.phone", "==", normalizedPhone)
-      );
-      const qLegacyRaw = rawPhone
-        ? query(
-            collection(db, "bookings"),
-            where("contact.phoneRaw", "==", rawPhone)
-          )
-        : null;
-
-      [qTop, qLegacyNorm, qLegacyDigits, qLegacyRaw]
-        .filter(Boolean)
-        .forEach((qRef) => {
-          const unsub = onSnapshot(
-            qRef,
-            (snap) => {
-              const rows = snap.docs.map((d) => normalizeBookingForRead({ id: d.id, ...d.data() }));
-              mergeBookingsFromSource(rows, "phone");
-            },
-            (err) => {
-              console.error("[payment-center] phone query error", {
-                code: err?.code,
-                message: err?.message,
-                queryType: "phone",
-              });
-              setLoadError(err?.message || String(err));
-              setLoading(false);
-              if (process.env.NODE_ENV !== "production") {
-                const errorCode = err?.code || "";
-                if (errorCode === "permission-denied" || errorCode === "failed-precondition") {
-                  setFirestoreErrors((prev) => [
-                    ...prev,
-                    { queryType: "phone", code: errorCode, message: err?.message || String(err) },
-                  ]);
-                }
-              }
-            }
-          );
-          unsubs.push(unsub);
-        });
-    };
-
     const run = async () => {
       const user = auth.currentUser;
       if (!user) {
@@ -771,22 +676,6 @@ const PaymentCenterPage = () => {
         setBookings([]);
         return;
       }
-
-      let emailLower = (user.email || "").toLowerCase();
-      let phoneRaw = user.phoneNumber || "";
-
-      try {
-        const profileSnap = await getDoc(doc(db, "users", user.uid));
-        if (profileSnap.exists()) {
-          const data = profileSnap.data() || {};
-          emailLower = (data.email || user.email || "").toLowerCase();
-          phoneRaw = data.phone || user.phoneNumber || "";
-        }
-      } catch (err) {
-        console.warn("PaymentCenter profile read failed", err);
-      }
-
-      const normalizedPhone = normalizePhone(phoneRaw);
 
       const bookingsRef = collection(db, "bookings");
       const qUid = query(bookingsRef, where("userId", "==", user.uid));
@@ -818,8 +707,10 @@ const PaymentCenterPage = () => {
       );
       unsubs.push(unsubUid);
 
-      attachEmailListeners(emailLower);
-      attachPhoneListeners(normalizedPhone, phoneRaw);
+      // NOTE: For client users, we only query by userId (uid query above).
+      // Email and phone-based queries are blocked by Firestore rules for non-admin users.
+      // Admin users should use admin pages (AdminPaymentsPage) which has email/phone fallbacks.
+      // This prevents permission-denied errors in client PaymentCenter.
     };
 
     run();
