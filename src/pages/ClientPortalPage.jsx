@@ -1061,6 +1061,29 @@ const bookingsWithFriendly = useMemo(() => {
   };
 
   /* -------------------- Render (Auth) -------------------- */
+  // While auth is initializing, show a loader (not the login form yet)
+  if (loadingInitial) {
+    return (
+      <div className="relative min-h-[90vh] flex items-center justify-center px-3 sm:px-4 py-12 sm:py-16 md:py-20 bg-[#FADADD]">
+        <div className="w-full max-w-md">
+          <motion.div
+            className="relative z-10 w-full"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.4 }}
+          >
+            <div className="text-center">
+              <div className="inline-block mb-4">
+                <div className="w-12 h-12 border-4 border-plum/20 border-t-plum rounded-full animate-spin" />
+              </div>
+              <p className="text-plum/70 text-sm">Loading your account...</p>
+            </div>
+          </motion.div>
+        </div>
+      </div>
+    );
+  }
+
   if (!isLoggedIn) {
     return (
       <div className="relative min-h-[90vh] flex items-center justify-center px-3 sm:px-4 py-12 sm:py-16 md:py-20 bg-[#FADADD]">
