@@ -12,6 +12,7 @@ import {
   collection,
   serverTimestamp,
 } from "firebase/firestore";
+import { normalizeBookingForWrite } from "@/lib/bookings";
 import {
   Dialog,
   DialogContent,
@@ -130,7 +131,7 @@ export function RescheduleModal({ open, booking, onClose }) {
     try {
       // Update the booking doc
       const bookingRef = doc(db, "bookings", booking.id);
-      await updateDoc(bookingRef, {
+      const rescheduleUpdate = {
         startAt: Timestamp.fromDate(newStart),
         scheduledAt: Timestamp.fromDate(newStart), // keep compatibility
         endAt: Timestamp.fromDate(newEnd),
@@ -142,7 +143,9 @@ export function RescheduleModal({ open, booking, onClose }) {
           previousStartAt: booking.startAt,
           previousEndAt: booking.endAt,
         },
-      });
+      };
+      const normalizedRescheduleUpdate = normalizeBookingForWrite(rescheduleUpdate);
+      await updateDoc(bookingRef, normalizedRescheduleUpdate);
 
       // Queue email to client
       if (clientEmail) {

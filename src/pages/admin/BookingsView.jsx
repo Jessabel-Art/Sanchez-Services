@@ -15,6 +15,7 @@ import { db, auth } from "@/lib/firebase";
 import { createBookingWithConflictCheck } from "@/lib/db";
 import { derivePaymentInfo } from "@/lib/payments";
 import { stripUndefinedDeep } from "@/lib/contactModel";
+import { normalizeBookingForWrite } from "@/lib/bookings";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
@@ -597,10 +598,12 @@ export default function BookingsView() {
 
       const oldStatus = booking.status;
       const ref = doc(db, "bookings", bookingId);
-      await updateDoc(ref, {
+      const statusUpdate = {
         status: newStatus,
         updatedAt: serverTimestamp ? serverTimestamp() : new Date(),
-      });
+      };
+      const normalizedStatusUpdate = normalizeBookingForWrite(statusUpdate);
+      await updateDoc(ref, normalizedStatusUpdate);
 
       // Enqueue confirmation/cancellation email
       if (newStatus === "confirmed" || newStatus === "cancelled") {
@@ -640,10 +643,12 @@ export default function BookingsView() {
   const handleSaveNotes = async (bookingId) => {
     try {
       const ref = doc(db, "bookings", bookingId);
-      await updateDoc(ref, {
+      const notesUpdate = {
         notes: notesDraft.trim(),
         updatedAt: serverTimestamp ? serverTimestamp() : new Date(),
-      });
+      };
+      const normalizedNotesUpdate = normalizeBookingForWrite(notesUpdate);
+      await updateDoc(ref, normalizedNotesUpdate);
 
       toast({
         title: "Notes updated",
@@ -698,12 +703,14 @@ export default function BookingsView() {
       newDate.setHours(hour, minute || 0, 0, 0);
 
       const ref = doc(db, "bookings", bookingId);
-      await updateDoc(ref, {
+      const rescheduleUpdate = {
         scheduledAt: newDate,
         startAt: newDate,
         dateKey: reschedDate,
         updatedAt: serverTimestamp ? serverTimestamp() : new Date(),
-      });
+      };
+      const normalizedRescheduleUpdate = normalizeBookingForWrite(rescheduleUpdate);
+      await updateDoc(ref, normalizedRescheduleUpdate);
 
       // Enqueue rescheduled email
       await enqueueBookingEmail({
@@ -748,16 +755,18 @@ export default function BookingsView() {
     try {
       // Strip undefined values to prevent Firestore errors
       const cleanPayload = stripUndefinedDeep(payload);
+      // Normalize timestamps before write to ensure proper Firestore types
+      const normalizedPayload = normalizeBookingForWrite(cleanPayload);
       
       if (existingId) {
         // Update existing booking (no conflict check needed for updates)
         const ref = doc(db, "bookings", existingId);
-        await updateDoc(ref, cleanPayload);
+        await updateDoc(ref, normalizedPayload);
       } else {
         // New booking: use server-side conflict checking
         // createBookingWithConflictCheck will throw if conflict detected
-        const userId = auth.currentUser?.uid || cleanPayload.userId || 'admin';
-        await createBookingWithConflictCheck(userId, cleanPayload);
+        const userId = auth.currentUser?.uid || normalizedPayload.userId || 'admin';
+        await createBookingWithConflictCheck(userId, normalizedPayload);
       }
       // Note: BookingModal now handles email queueing via /mail collection.
     } catch (err) {

@@ -3,6 +3,8 @@
  * Canonical address and phone helpers (JS with JSDoc for editor hints)
  */
 
+import { Timestamp } from 'firebase/firestore';
+
 /**
  * @typedef {Object} Address
  * @property {string} [id]
@@ -127,6 +129,7 @@ export function deriveProfileAddressFields(addresses) {
 
 /**
  * Recursively strip undefined values from an object to prevent Firestore errors.
+ * Preserves Firestore Timestamp instances and serverTimestamp() sentinels.
  * Returns a new object without undefined fields.
  * @param {any} obj
  * @returns {any}
@@ -134,6 +137,16 @@ export function deriveProfileAddressFields(addresses) {
 export function stripUndefinedDeep(obj) {
   if (obj === null || obj === undefined) return obj;
   if (typeof obj !== 'object') return obj;
+  
+  // Preserve Firestore Timestamp instances
+  if (obj instanceof Timestamp) return obj;
+  
+  // Preserve serverTimestamp() sentinels (have _methodName property)
+  if (obj && typeof obj === 'object' && '_methodName' in obj) return obj;
+  
+  // Preserve objects with toDate method (Firestore Timestamp-like)
+  if (obj && typeof obj.toDate === 'function') return obj;
+  
   if (Array.isArray(obj)) return obj.map(stripUndefinedDeep);
 
   const result = {};

@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/dialog";
 
 import { db, auth, functions } from "@/lib/firebase";
+import { normalizeBookingForRead } from "@/lib/bookings";
 import { collection, doc, getDoc, onSnapshot, query, where } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 
@@ -619,6 +620,7 @@ const PaymentCenterPage = () => {
   const [bookings, setBookings] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
+  const [firestoreErrors, setFirestoreErrors] = useState([]); // DEV: track permission/precondition errors
 
   const [selectedBooking, setSelectedBooking] = useState(null);
   const [selectedContext, setSelectedContext] = useState(null); // "upcoming" | "history" | null
@@ -682,13 +684,26 @@ const PaymentCenterPage = () => {
         const unsub = onSnapshot(
           qRef,
           (snap) => {
-            const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+            const rows = snap.docs.map((d) => normalizeBookingForRead({ id: d.id, ...d.data() }));
             mergeBookingsFromSource(rows, "email");
           },
           (err) => {
-            console.error("PaymentCenter email listener error", err);
+            console.error("[payment-center] email query error", {
+              code: err?.code,
+              message: err?.message,
+              queryType: "email",
+            });
             setLoadError(err?.message || String(err));
             setLoading(false);
+            if (process.env.NODE_ENV !== "production") {
+              const errorCode = err?.code || "";
+              if (errorCode === "permission-denied" || errorCode === "failed-precondition") {
+                setFirestoreErrors((prev) => [
+                  ...prev,
+                  { queryType: "email", code: errorCode, message: err?.message || String(err) },
+                ]);
+              }
+            }
           }
         );
         unsubs.push(unsub);
@@ -723,13 +738,26 @@ const PaymentCenterPage = () => {
           const unsub = onSnapshot(
             qRef,
             (snap) => {
-              const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+              const rows = snap.docs.map((d) => normalizeBookingForRead({ id: d.id, ...d.data() }));
               mergeBookingsFromSource(rows, "phone");
             },
             (err) => {
-              console.error("PaymentCenter phone listener error", err);
+              console.error("[payment-center] phone query error", {
+                code: err?.code,
+                message: err?.message,
+                queryType: "phone",
+              });
               setLoadError(err?.message || String(err));
               setLoading(false);
+              if (process.env.NODE_ENV !== "production") {
+                const errorCode = err?.code || "";
+                if (errorCode === "permission-denied" || errorCode === "failed-precondition") {
+                  setFirestoreErrors((prev) => [
+                    ...prev,
+                    { queryType: "phone", code: errorCode, message: err?.message || String(err) },
+                  ]);
+                }
+              }
             }
           );
           unsubs.push(unsub);
@@ -766,13 +794,26 @@ const PaymentCenterPage = () => {
       const unsubUid = onSnapshot(
         qUid,
         (snap) => {
-          const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+          const rows = snap.docs.map((d) => normalizeBookingForRead({ id: d.id, ...d.data() }));
           mergeBookingsFromSource(rows, "uid");
         },
         (err) => {
-          console.error("PaymentCenter bookings error", err);
+          console.error("[payment-center] uid query error", {
+            code: err?.code,
+            message: err?.message,
+            queryType: "uid",
+          });
           setLoadError(err?.message || String(err));
           setLoading(false);
+          if (process.env.NODE_ENV !== "production") {
+            const errorCode = err?.code || "";
+            if (errorCode === "permission-denied" || errorCode === "failed-precondition") {
+              setFirestoreErrors((prev) => [
+                ...prev,
+                { queryType: "uid", code: errorCode, message: err?.message || String(err) },
+              ]);
+            }
+          }
         }
       );
       unsubs.push(unsubUid);
@@ -1421,6 +1462,18 @@ const PaymentCenterPage = () => {
             and payment methods work for your appointments.
           </p>
         </header>
+
+        {/* DEV: Firestore error banner */}
+        {process.env.NODE_ENV !== "production" && firestoreErrors.length > 0 && (
+          <div className="mb-4 p-3 bg-amber-50 border border-amber-300 rounded-lg text-sm text-amber-900">
+            <div className="font-semibold mb-1">⚠️ Firestore Query Errors (DEV only)</div>
+            {firestoreErrors.map((e, i) => (
+              <div key={i} className="ml-4 text-xs">
+                • <strong>{e.queryType}</strong>: {e.code} - {e.message}
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* Summary: next appointment + amount due now */}
         {user && (

@@ -1,6 +1,7 @@
 // src/pages/admin/DashboardHome.jsx
 import React from "react";
 import { db } from "@/lib/firebase";
+import { normalizeBookingForRead } from "@/lib/bookings";
 import {
   collection,
   onSnapshot,
@@ -96,7 +97,7 @@ export default function DashboardHome({ onChangeView }) {
     const unsub = onSnapshot(
       qRef,
       (snap) => {
-        const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        const list = snap.docs.map((d) => normalizeBookingForRead({ id: d.id, ...d.data() }));
         setRows(list);
         setLoading(false);
       },

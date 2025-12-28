@@ -2,6 +2,7 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
 import { db } from "@/lib/firebase";
+import { normalizeBookingForRead, normalizeBookingForWrite } from "@/lib/bookings";
 import {
   collection,
   onSnapshot,
@@ -361,7 +362,7 @@ export default function CalendarView() {
     const unsub = onSnapshot(
       qRef,
       (snap) => {
-        setRows(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+        setRows(snap.docs.map((d) => normalizeBookingForRead({ id: d.id, ...d.data() })));
         subErrorWarnedRef.current = false;
       },
       (err) => {
@@ -369,7 +370,10 @@ export default function CalendarView() {
         subErrorWarnedRef.current = true;
 
         // eslint-disable-next-line no-console
-        console.error("Calendar subscription error", err, {
+        console.error("[calendar] bookings query error", {
+          code: err?.code,
+          message: err?.message,
+          queryType: "bookings-by-startAt-range",
           user,
         });
         toast({
@@ -408,7 +412,11 @@ export default function CalendarView() {
         blackoutErrorWarnedRef.current = true;
 
         // eslint-disable-next-line no-console
-        console.error("Blackouts subscription error", err);
+        console.error("[calendar] blackouts query error", {
+          code: err?.code,
+          message: err?.message,
+          queryType: "blackouts-by-startAt-range",
+        });
         toast({
           title: "Could not load blackouts",
           description: err?.message || String(err),
@@ -616,12 +624,14 @@ export default function CalendarView() {
   };
 
   const persistWhen = async (event, start, end) => {
-    await updateDoc(doc(db, "bookings", event.id), {
+    const persistUpdate = {
       startAt: Timestamp.fromDate(start),
       endAt: Timestamp.fromDate(end),
       dateKey: start.toISOString().slice(0, 10),
       updatedAt: Timestamp.now(),
-    });
+    };
+    const normalizedPersistUpdate = normalizeBookingForWrite(persistUpdate);
+    await updateDoc(doc(db, "bookings", event.id), normalizedPersistUpdate);
     toast({
       title: "Rescheduled",
       description: `${start.toLocaleString()} – ${start.toLocaleTimeString(
@@ -1252,11 +1262,13 @@ export default function CalendarView() {
 
       if (trimmed !== (originalNotes || "")) {
         try {
-          await updateDoc(doc(db, "bookings", selectedEvent.id), {
+          const notesUpdate = {
             notesForCleaner: trimmed,
             notes: trimmed,
             updatedAt: Timestamp.now(),
-          });
+          };
+          const normalizedNotesUpdate = normalizeBookingForWrite(notesUpdate);
+          await updateDoc(doc(db, "bookings", selectedEvent.id), normalizedNotesUpdate);
           toast({
             title: "Notes updated",
             description: "Cleaner notes were saved to this appointment.",

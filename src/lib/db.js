@@ -41,6 +41,7 @@ import {
 import { httpsCallable } from 'firebase/functions';
 import { functions } from '@/lib/firebase';
 import { normalizeAddress, stripUndefinedDeep } from './contactModel';
+import { normalizeBookingForWrite } from './bookings';
 
 /** ---------- Helpers ---------- */
 export const now = () => serverTimestamp();
@@ -437,8 +438,10 @@ export async function createBookingWithConflictCheck(uid, data) {
   }
 
   // Write directly to Firestore (client can create due to validBookingCreate rule)
+  // Normalize timestamps before write to ensure proper Firestore types
+  const normalizedData = normalizeBookingForWrite(cleanData);
   const newRef = doc(collection(db, 'bookings'));
-  await setDoc(newRef, cleanData);
+  await setDoc(newRef, normalizedData);
   return newRef;
 }
 
@@ -482,7 +485,9 @@ export async function createBooking(uid, data) {
     },
   });
   
-  const ref = await addDoc(collection(db, 'bookings'), cleanData);
+  // Normalize timestamps before write to ensure proper Firestore types
+  const normalizedData = normalizeBookingForWrite(cleanData);
+  const ref = await addDoc(collection(db, 'bookings'), normalizedData);
   return ref;
 }
 
@@ -507,7 +512,9 @@ export function onUserBookings(uid, cb) {
 
 export async function updateBooking(bookingId, patch) {
   const ref = doc(db, 'bookings', bookingId);
-  await updateDoc(ref, { ...patch, updatedAt: now() });
+  // Normalize timestamps before write to ensure proper Firestore types
+  const normalizedPatch = normalizeBookingForWrite({ ...patch, updatedAt: now() });
+  await updateDoc(ref, normalizedPatch);
   return ref;
 }
 

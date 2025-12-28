@@ -7,6 +7,7 @@ import { useToast } from "@/components/ui/use-toast";
 import { db } from "@/lib/firebase";
 import { hasOverlap } from "@/lib/db";
 import { normalizePhone, normalizeAddress } from '@/lib/contactModel';
+import { normalizeBookingForWrite } from '@/lib/bookings';
 import {
   Timestamp,
   addDoc,
@@ -296,8 +297,10 @@ export function BookingModal({ open, initial, onClose, onSave }) {
     }
 
     try {
+      // Normalize timestamps before save to ensure proper Firestore types
+      const normalizedPayload = normalizeBookingForWrite(payload);
       // Save via parent callback (this ensures ownerKeys/user linkage etc.)
-      await onSave?.(payload, initial?.id || null);
+      await onSave?.(normalizedPayload, initial?.id || null);
 
       let description = "Booking saved.";
 

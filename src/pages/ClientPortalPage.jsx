@@ -46,7 +46,7 @@ import {
   updateEmail,
 } from "firebase/auth";
 import { auth, db } from "@/lib/firebase";
-import { normalizeAddress } from '@/lib/contactModel';
+import { normalizeAddress, normalizePhone } from '@/lib/contactModel';
 import {
   collection,
   onSnapshot,
@@ -67,6 +67,13 @@ import {
 // Firestore helpers
 import { ensureProfile, getAddress } from "@/lib/db";
 import { updateProfileContact, updateProfileAddress, upsertProfile } from "@/lib/profileModel";
+import { normalizeBookingForRead, normalizeBookingForWrite } from "@/lib/bookings";
+import {
+  buildUserBookingQueries,
+  claimGuestBookings,
+  dedupeById,
+  DEFAULT_BOOKING_QUERY_LIMIT,
+} from "@/lib/bookingsQuery";
 
 // Portal components
 import ClientDashboardHome from "@/components/portal/ClientDashboardHome";
@@ -141,7 +148,7 @@ const selectTriggerClass =
 const selectContentClass = "bg-white border border-plum/20 text-plum shadow-xl";
 const selectItemClass = "focus:bg-gold/10 focus:text-plum cursor-pointer";
 
-const QUERY_LIMIT = 1000;
+const QUERY_LIMIT = DEFAULT_BOOKING_QUERY_LIMIT;
 
 /* -------------------- Helpers -------------------- */
 function toFriendlyStatus(raw, endAt) {
@@ -184,31 +191,6 @@ function formatDateTime(tsLike) {
   } catch {
     return "TBD";
   }
-}
-
-function dedupeById(rows) {
-  const m = new Map();
-  rows.forEach((r) => m.set(r.id, r));
-  const arr = Array.from(m.values());
-  const toMillis = (tsLike) => {
-    try {
-      if (!tsLike) return 0;
-      if (typeof tsLike?.toDate === "function") return tsLike.toDate().getTime();
-      if (typeof tsLike === "object" && typeof tsLike.seconds === "number") {
-        return tsLike.seconds * 1000 + Math.floor((tsLike.nanoseconds || 0) / 1e6);
-      }
-      const d = new Date(tsLike);
-      return Number.isNaN(d.getTime()) ? 0 : d.getTime();
-    } catch {
-      return 0;
-    }
-  };
-  arr.sort((a, b) => {
-    const aTime = toMillis(a.startAt || a.scheduledAt || a.endAt || a.createdAt);
-    const bTime = toMillis(b.startAt || b.scheduledAt || b.endAt || b.createdAt);
-    return bTime - aTime;
-  });
-  return arr;
 }
 
 /* -------------------- Lightweight Dialog -------------------- */
@@ -264,6 +246,7 @@ export default function ClientPortalPage() {
   const [loadingInitial, setLoadingInitial] = useState(true);
   const [errorMsg, setErrorMsg] = useState("");
   const [section, setSection] = useState("dashboard"); // dashboard | appointments | profile | logout
+  const [firestoreErrors, setFirestoreErrors] = useState([]); // DEV: track permission/precondition errors
 
   // contact profile (for ProfileSettingsPanel)
   const [contactProfile, setContactProfile] = useState({
@@ -394,78 +377,18 @@ export default function ClientPortalPage() {
         const userId = user.uid;
         const emailLower = (user.email || "").toLowerCase();
 
-        // One-time claim of prior guest bookings that match this user's email/phone
-        const claimedOnceRef = { current: false };
-        const claimGuestBookings = async () => {
-          if (claimedOnceRef.current) return;
-          claimedOnceRef.current = true;
-          try {
-            const phoneNormalized = (() => {
-              const digits = String(phoneFromProfile || "").replace(/\D+/g, "");
-              if (digits.length === 11 && digits.startsWith("1")) return digits.slice(1);
-              return digits || null;
-            })();
+        const phoneNormalized = normalizePhone(phoneFromProfile);
+        const phoneRaw = phoneFromProfile || "";
 
-            const filters = [];
-            if (emailLower) {
-              filters.push(where("contactEmailLower", "==", emailLower));
-              filters.push(where("contact.emailLower", "==", emailLower));
-            }
-            if (phoneNormalized) {
-              filters.push(where("contactPhoneNormalized", "==", phoneNormalized));
-              filters.push(where("contact.phoneNormalized", "==", phoneNormalized));
-              filters.push(where("contact.phone", "==", phoneNormalized));
-            }
+        await claimGuestBookings(db, {
+          uid: userId,
+          emailLower,
+          phoneNormalized,
+          phoneRaw,
+          limit: QUERY_LIMIT,
+        });
 
-            if (!filters.length) return;
-
-            const baseCollection = collection(db, "bookings");
-            // Query for userId == null to avoid touching owned docs
-            const queries = filters.map((f) =>
-              query(baseCollection, where("userId", "==", null), f, limit(QUERY_LIMIT))
-            );
-
-            const snapshots = await Promise.all(queries.map((q) => getDocs(q)));
-            const toClaim = dedupeById(
-              snapshots.flatMap((snap) => snap.docs.map((d) => ({ id: d.id, ...d.data() })))
-            );
-
-            if (!toClaim.length) {
-              if (process.env.NODE_ENV !== "production") {
-                console.log("[client-portal claim] none found");
-              }
-              return;
-            }
-
-            const claims = toClaim.map(async (row) => {
-              if (row.userId) return; // already claimed by someone
-              const ref = doc(db, "bookings", row.id);
-              const nextOwnerKeys = Array.isArray(row.ownerKeys) ? row.ownerKeys.slice() : [];
-              const ownerKey = `uid:${userId}`;
-              if (!nextOwnerKeys.includes(ownerKey)) nextOwnerKeys.push(ownerKey);
-              await updateDoc(ref, {
-                userId,
-                ownerKeys: nextOwnerKeys,
-                updatedAt: serverTimestamp(),
-              });
-            });
-            await Promise.all(claims);
-
-            if (process.env.NODE_ENV !== "production") {
-              console.log("[client-portal claim] claimed bookings", { count: toClaim.length });
-            }
-          } catch (claimErr) {
-            console.error("[client-portal claim] error", claimErr);
-          }
-        };
-
-        await claimGuestBookings();
-
-        // Attach listeners conditionally to avoid permission errors.
-        const emailListenerAttached = { current: false };
-        const phoneListenerAttached = { current: false };
-        const ownerListenerAttached = { current: false };
-        const sourceCountsRef = { current: { uid: 0, email: 0, phone: 0, ownerKey: 0 } };
+        const sourceCountsRef = { current: {} };
 
         const mergeBookingsFromSource = (rows, sourceKey) => {
           setBookings((prev) => {
@@ -476,10 +399,10 @@ export default function ClientPortalPage() {
               }
               const counts = sourceCountsRef.current;
               console.log("[client-portal bookings] source counts", {
-                uidDocs: counts.uid,
-                emailDocs: counts.email,
-                phoneDocs: counts.phone,
-                ownerKeyDocs: counts.ownerKey,
+                uidDocs: counts.uid || 0,
+                emailDocs: counts.email || 0,
+                phoneDocs: counts.phone || 0,
+                ownerKeyDocs: counts.ownerKey || 0,
                 mergedTotal: merged.length,
               });
             }
@@ -488,177 +411,42 @@ export default function ClientPortalPage() {
           setLoadingBookings(false);
         };
 
-        const attachOwnerListener = () => {
-          if (ownerListenerAttached.current) return;
-          ownerListenerAttached.current = true;
-          const qByOwnerKey = query(
-            collection(db, "bookings"),
-            where("ownerKeys", "array-contains", `uid:${userId}`),
-            orderBy("startAt", "desc"),
-            limit(QUERY_LIMIT)
-          );
+        const queries = buildUserBookingQueries(db, {
+          uid: userId,
+          emailLower,
+          phoneNormalized,
+          phoneRaw,
+          includeOwnerKeys: true,
+          limit: QUERY_LIMIT,
+        });
+
+        queries.forEach(({ source, ref }) => {
           const unsub = onSnapshot(
-            qByOwnerKey,
+            ref,
             (snap) => {
-              const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-              mergeBookingsFromSource(rows, "ownerKey");
+              const rows = snap.docs.map((d) => normalizeBookingForRead({ id: d.id, ...d.data() }));
+              mergeBookingsFromSource(rows, source);
             },
             (err) => {
-              console.error(err);
+              console.error(`[client-portal] ${source} query error`, {
+                code: err?.code,
+                message: err?.message,
+                queryType: source,
+              });
               setLoadingBookings(false);
+              if (process.env.NODE_ENV !== "production") {
+                const errorCode = err?.code || "";
+                if (errorCode === "permission-denied" || errorCode === "failed-precondition") {
+                  setFirestoreErrors((prev) => [
+                    ...prev,
+                    { queryType: source, code: errorCode, message: err?.message || String(err) },
+                  ]);
+                }
+              }
             }
           );
           unsubsRef.current.push(unsub);
-        };
-
-        const attachEmailListener = () => {
-          if (emailListenerAttached.current || !emailLower) return;
-          emailListenerAttached.current = true;
-          const qByEmailTop = query(
-            collection(db, "bookings"),
-            where("contactEmailLower", "==", emailLower),
-            orderBy("startAt", "desc"),
-            limit(QUERY_LIMIT)
-          );
-          const qByEmailLegacy = query(
-            collection(db, "bookings"),
-            where("contact.emailLower", "==", emailLower),
-            orderBy("startAt", "desc"),
-            limit(QUERY_LIMIT)
-          );
-
-          const unsubTop = onSnapshot(
-            qByEmailTop,
-            (snap) => {
-              const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-              mergeBookingsFromSource(rows, "email");
-
-              // If email listener also finds nothing, fall back to ownerKeys
-              if (snap.empty && !ownerListenerAttached.current) {
-                attachOwnerListener();
-              }
-            },
-            (err) => {
-              console.error(err);
-              setLoadingBookings(false);
-            }
-          );
-
-          const unsubLegacy = onSnapshot(
-            qByEmailLegacy,
-            (snap) => {
-              const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-              mergeBookingsFromSource(rows, "email");
-            },
-            (err) => {
-              console.error(err);
-              setLoadingBookings(false);
-            }
-          );
-
-          unsubsRef.current.push(unsubTop, unsubLegacy);
-        };
-
-        const attachPhoneListener = (normalizedPhone, rawPhoneString) => {
-          if (phoneListenerAttached.current || !normalizedPhone) return;
-          phoneListenerAttached.current = true;
-
-          // Top-level normalized field
-          const qByPhoneTop = query(
-            collection(db, "bookings"),
-            where("contactPhoneNormalized", "==", normalizedPhone),
-            orderBy("startAt", "desc"),
-            limit(QUERY_LIMIT)
-          );
-
-          // Legacy: contact.phoneNormalized
-          const qByPhoneNormLegacy = query(
-            collection(db, "bookings"),
-            where("contact.phoneNormalized", "==", normalizedPhone),
-            orderBy("startAt", "desc"),
-            limit(QUERY_LIMIT)
-          );
-
-          // Legacy: contact.phone (digits only)
-          const qByPhoneDigits = query(
-            collection(db, "bookings"),
-            where("contact.phone", "==", normalizedPhone),
-            orderBy("startAt", "desc"),
-            limit(QUERY_LIMIT)
-          );
-
-          // Legacy: contact.phoneRaw (may be formatted; try exact match)
-          const qByPhoneRaw = rawPhoneString ? query(
-            collection(db, "bookings"),
-            where("contact.phoneRaw", "==", rawPhoneString),
-            orderBy("startAt", "desc"),
-            limit(QUERY_LIMIT)
-          ) : null;
-
-          const unsubs = [];
-
-          [qByPhoneTop, qByPhoneNormLegacy, qByPhoneDigits, qByPhoneRaw]
-            .filter(Boolean)
-            .forEach(q => {
-              unsubs.push(onSnapshot(
-                q,
-                (snap) => {
-                  const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-                  mergeBookingsFromSource(rows, "phone");
-                },
-                (err) => {
-                  console.error(err);
-                  setLoadingBookings(false);
-                }
-              ));
-            });
-
-          unsubsRef.current.push(...unsubs);
-        };
-
-        // 1) Primary listener by userId (always attach)
-        const qByUidStart = query(
-          collection(db, "bookings"),
-          where("userId", "==", userId),
-          orderBy("startAt", "desc"),
-          limit(QUERY_LIMIT)
-        );
-        const u1 = onSnapshot(
-          qByUidStart,
-          (snap) => {
-            const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-            mergeBookingsFromSource(rows, "uid");
-
-            // Always attach email + phone fallbacks when available
-            if (!emailListenerAttached.current) {
-              attachEmailListener();
-            }
-            const raw = phoneFromProfile || "";
-            const np = (() => {
-              const digits = String(raw).replace(/\D+/g, "");
-              if (digits.length === 11 && digits.startsWith("1")) return digits.slice(1);
-              return digits;
-            })();
-            if (np) attachPhoneListener(np, raw);
-          },
-          (err) => {
-            console.error(err);
-            setLoadingBookings(false);
-          }
-        );
-        unsubsRef.current.push(u1);
-
-        // Attach email/phone fallbacks immediately when profile has them
-        if (!emailListenerAttached.current) {
-          attachEmailListener();
-        }
-        const rawPhoneNow = phoneFromProfile || "";
-        const npNow = (() => {
-          const digits = String(rawPhoneNow).replace(/\D+/g, "");
-          if (digits.length === 11 && digits.startsWith("1")) return digits.slice(1);
-          return digits;
-        })();
-        if (npNow) attachPhoneListener(npNow, rawPhoneNow);
+        });
 
         // addresses listener
         const uAddr = onSnapshot(
@@ -672,7 +460,11 @@ export default function ClientPortalPage() {
             );
           },
           (err) => {
-            console.error("Address listener error", err);
+            console.error("[client-portal] addresses query error", {
+              code: err?.code,
+              message: err?.message,
+              queryType: "addresses",
+            });
           }
         );
         unsubsRef.current.push(uAddr);
@@ -1424,6 +1216,18 @@ const bookingsWithFriendly = useMemo(() => {
           <p className="text-xs sm:text-sm md:text-base text-plum/80 mt-2">Welcome {displayName}.</p>
         </motion.div>
 
+        {/* DEV: Firestore error banner */}
+        {process.env.NODE_ENV !== "production" && firestoreErrors.length > 0 && (
+          <div className="mb-4 p-3 bg-amber-50 border border-amber-300 rounded-lg text-sm text-amber-900">
+            <div className="font-semibold mb-1">⚠️ Firestore Query Errors (DEV only)</div>
+            {firestoreErrors.map((e, i) => (
+              <div key={i} className="ml-4 text-xs">
+                • <strong>{e.queryType}</strong>: {e.code} - {e.message}
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Status legend + top action */}
         <div className="mt-2 mb-8 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 sm:gap-0">
           <div className="text-xs sm:text-sm text-plum/70 flex flex-wrap gap-2 sm:gap-3 items-center">
@@ -1814,11 +1618,13 @@ const bookingsWithFriendly = useMemo(() => {
                     });
 
                     // 2) Update the booking with review metadata so PastBookings can see it
-                    await updateDoc(doc(db, "bookings", activeBooking.id), {
+                    const reviewUpdate = {
                       reviewRating: ratingValue,
                       reviewId: reviewRef.id,
                       reviewLeftAt: serverTimestamp(),
-                    });
+                    };
+                    const normalizedReviewUpdate = normalizeBookingForWrite(reviewUpdate);
+                    await updateDoc(doc(db, "bookings", activeBooking.id), normalizedReviewUpdate);
 
                     // 3) Optimistically update local state so UI reflects it immediately
                     setBookings((prev) =>

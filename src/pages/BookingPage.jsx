@@ -20,6 +20,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { db, auth } from '@/lib/firebase';
 import { updateProfileAddressFromServiceAddress } from '@/lib/profileModel';
 import { normalizePhone, stripUndefinedDeep } from '@/lib/contactModel';
+import { normalizeBookingForWrite } from '@/lib/bookings';
 import { buildAdminAllowlist } from '@/lib/adminAllowlist';
 import { getProfile, getAddress } from '@/lib/db';
 import {
@@ -936,7 +937,7 @@ const BookingPage = () => {
       if (isEditing && bookingId) {
         // Reschedule/update existing booking (no Stripe flow for edits)
         // Only update fields that clients are permitted to change per Firestore rules
-        await updateDoc(doc(db, "bookings", bookingId), {
+        const updatePayload = {
           scheduledAt: Timestamp.fromDate(startDate),
           startAt: Timestamp.fromDate(startDate),
           endAt: Timestamp.fromDate(endDate),
@@ -946,7 +947,9 @@ const BookingPage = () => {
           accessNotes: form.accessNotes || "",
           cleanerNotes: form.cleanerNotes || "",
           notes: form.cleanerNotes || form.accessNotes || "",
-        });
+        };
+        const normalizedPayload = normalizeBookingForWrite(updatePayload);
+        await updateDoc(doc(db, "bookings", bookingId), normalizedPayload);
         navigate(`/confirm?bookingId=${bookingId}`);
         return;
       }

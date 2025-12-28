@@ -38,6 +38,7 @@ import {
   isCancelled,
   computeRemainingDue,
 } from "@/lib/payments";
+import { normalizeBookingForWrite } from "@/lib/bookings";
 import {
   Select,
   SelectTrigger,
@@ -738,7 +739,9 @@ const AdminPaymentsPage = ({ embedded = false, onChangeView }) => {
         patch.refundedAmount = 0;
       }
 
-      await updateDoc(ref, patch);
+      // Normalize timestamps before write to ensure proper Firestore types
+      const normalizedPatch = normalizeBookingForWrite(patch);
+      await updateDoc(ref, normalizedPatch);
       setEditingRow(null);
       toast({
         title: "Payment details updated",
