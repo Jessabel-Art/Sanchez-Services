@@ -161,6 +161,31 @@ export function useAdminAuth() {
           }
         }
       } catch (err) {
+        // Permission-denied errors are EXPECTED for non-admin users trying to read admin/profile docs.
+        // Silently treat them as "not admin" without logging as errors.
+        const isPermissionDenied = err?.code === "permission-denied";
+        
+        if (!isPermissionDenied) {
+          // Only warn on unexpected errors (network, quota, etc.)
+          console.warn(
+            "%c[useAdminAuth] Firestore read error",
+            "color: #ef4444; font-weight: bold",
+            {
+              code: err?.code || "unknown",
+              message: err?.message || String(err),
+              uid,
+              email: emailLower,
+            }
+          );
+        } else if (isDev) {
+          // In DEV, silently log permission-denied for debugging
+          console.debug(
+            "%c[useAdminAuth] Permission denied (expected for non-admins)",
+            "color: #6366f1",
+            { uid, email: emailLower }
+          );
+        }
+
         // Firestore fetch failed; in DEV allow allowlist fallback, in PROD deny
         const authResult = checkAdminAuth({
           user: authUser,
@@ -177,21 +202,9 @@ export function useAdminAuth() {
             profileRole: null,
             adminDocFetched: false,
             profileFetched: false,
-            error: err,
+            error: isPermissionDenied ? null : err, // Don't store permission-denied as error
             requestId: currentRequestId,
           });
-
-          console.warn(
-            "%c[useAdminAuth] Firestore read error",
-            "color: #ef4444; font-weight: bold",
-            {
-              isAdmin: authResult.allowed,
-              authReason: authResult.reason,
-              uid,
-              email: emailLower,
-              firebaseError: err?.message || String(err),
-            }
-          );
         }
       }
     })();
