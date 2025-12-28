@@ -687,13 +687,25 @@ const PaymentCenterPage = () => {
           mergeBookingsFromSource(rows, "uid");
         },
         (err) => {
-          console.error("[payment-center] uid query error", {
-            code: err?.code,
-            message: err?.message,
-            queryType: "uid",
-          });
+          const isPermissionDenied = err?.code === "permission-denied";
+          
+          if (isPermissionDenied) {
+            // Permission-denied should NOT occur for uid queries (client owns their data).
+            console.warn(
+              "[payment-center] Permission denied on uid query (unexpected)",
+              { code: err?.code, message: err?.message }
+            );
+          } else {
+            console.error("[payment-center] uid query error", {
+              code: err?.code,
+              message: err?.message,
+              queryType: "uid",
+            });
+          }
+          
           setLoadError(err?.message || String(err));
           setLoading(false);
+          
           if (process.env.NODE_ENV !== "production") {
             const errorCode = err?.code || "";
             if (errorCode === "permission-denied" || errorCode === "failed-precondition") {

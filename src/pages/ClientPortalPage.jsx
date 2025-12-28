@@ -417,6 +417,7 @@ export default function ClientPortalPage() {
           phoneNormalized,
           phoneRaw,
           includeOwnerKeys: true,
+          clientMode: true, // Client users can only query by userId and ownerKeys
           limit: QUERY_LIMIT,
         });
 
@@ -428,12 +429,26 @@ export default function ClientPortalPage() {
               mergeBookingsFromSource(rows, source);
             },
             (err) => {
-              console.error(`[client-portal] ${source} query error`, {
-                code: err?.code,
-                message: err?.message,
-                queryType: source,
-              });
+              const isPermissionDenied = err?.code === "permission-denied";
+              
+              if (isPermissionDenied) {
+                // Permission-denied should NOT occur with clientMode=true.
+                // If it does, log a warning but don't hard-fail the page.
+                console.warn(
+                  `[client-portal] Permission denied on ${source} query (should not happen with clientMode)`,
+                  { queryType: source, code: err?.code, message: err?.message }
+                );
+              } else {
+                // Log other unexpected errors
+                console.error(`[client-portal] ${source} query error`, {
+                  code: err?.code,
+                  message: err?.message,
+                  queryType: source,
+                });
+              }
+              
               setLoadingBookings(false);
+              
               if (process.env.NODE_ENV !== "production") {
                 const errorCode = err?.code || "";
                 if (errorCode === "permission-denied" || errorCode === "failed-precondition") {
