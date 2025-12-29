@@ -44,6 +44,34 @@ export function buildUserBookingQueries(db, {
   const qLimit = fsLimit(limit);
   const queries = [];
 
+  if (clientMode) {
+    if (uid) {
+      queries.push({
+        source: "uid",
+        ref: query(
+          collection(db, "bookings"),
+          where("userId", "==", uid),
+          orderBy("startAt", "desc"),
+          qLimit
+        ),
+      });
+    }
+
+    if (includeOwnerKeys && uid) {
+      queries.push({
+        source: "ownerKey",
+        ref: query(
+          collection(db, "bookings"),
+          where("ownerKeys", "array-contains", `uid:${uid}`),
+          orderBy("startAt", "desc"),
+          qLimit
+        ),
+      });
+    }
+
+    return queries;
+  }
+
   if (uid) {
     queries.push({
       source: "uid",
@@ -56,9 +84,7 @@ export function buildUserBookingQueries(db, {
     });
   }
 
-  // Email and phone queries are ONLY allowed for admin users.
-  // Client users can only query by userId or ownerKeys (enforced by Firestore rules).
-  if (!clientMode && emailLower) {
+  if (emailLower) {
     queries.push({
       source: "email",
       ref: query(
@@ -80,7 +106,7 @@ export function buildUserBookingQueries(db, {
   }
 
   const phoneNorm = normalizePhoneForQuery(phoneNormalized);
-  if (!clientMode && phoneNorm) {
+  if (phoneNorm) {
     queries.push({
       source: "phone",
       ref: query(
@@ -111,7 +137,7 @@ export function buildUserBookingQueries(db, {
   }
 
   const phoneRawDigits = normalizePhoneForQuery(phoneRaw);
-  if (!clientMode && phoneRawDigits) {
+  if (phoneRawDigits) {
     queries.push({
       source: "phone",
       ref: query(
