@@ -393,7 +393,7 @@ export default function DashboardHome({ onChangeView }) {
             <p className="text-[11px] text-[#431039]/60 mb-2">
               Confirmed + completed scheduled for today.
             </p>
-            <div className="h-16">
+            <div className="h-16 min-w-0">
               {todaySeries.length ? (
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={todaySeries}>
@@ -430,7 +430,7 @@ export default function DashboardHome({ onChangeView }) {
             <p className="text-[11px] text-[#1E293B]/60 mb-2">
               Revenue scheduled in the next week.
             </p>
-            <div className="h-16">
+            <div className="h-16 min-w-0">
               {next7Series.length ? (
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={next7Series}>
@@ -473,7 +473,7 @@ export default function DashboardHome({ onChangeView }) {
             <p className="text-[11px] text-[#065F46]/60 mb-2">
               Booked in the current calendar month.
             </p>
-            <div className="h-16">
+            <div className="h-16 min-w-0">
               {monthSeries.length ? (
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={monthSeries}>
@@ -619,7 +619,7 @@ export default function DashboardHome({ onChangeView }) {
                 </div>
               ) : (
                 <>
-                  <div className="w-40 h-40">
+                  <div className="w-40 h-40 min-w-0">
                     <ResponsiveContainer width="100%" height="100%">
                       <PieChart>
                         <Pie
@@ -681,41 +681,43 @@ export default function DashboardHome({ onChangeView }) {
                 Based on confirmed + completed bookings in the current month.
               </p>
             </CardHeader>
-            <CardContent className="h-56">
-              {serviceMix.length === 0 ? (
-                <div className="text-sm text-[#431039]/60 flex items-center h-full">
-                  No services to show yet.
-                </div>
-              ) : (
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart
-                    data={serviceMix}
-                    layout="vertical"
-                    margin={{ left: 60 }}
-                  >
-                    <XAxis type="number" hide />
-                    <YAxis
-                      dataKey="name"
-                      type="category"
-                      tickFormatter={(v) =>
-                        v
-                          .split(" ")
-                          .map(
-                            (w) => w.charAt(0).toUpperCase() + w.slice(1)
-                          )
-                          .join(" ")
-                      }
-                      fontSize={11}
-                    />
-                    <RechartsTooltip />
-                    <Bar
-                      dataKey="count"
-                      radius={[0, 4, 4, 0]}
-                      fill={COLORS[0]}
-                    />
-                  </BarChart>
-                </ResponsiveContainer>
-              )}
+            <CardContent>
+              <div className="h-56 min-w-0">
+                {serviceMix.length === 0 ? (
+                  <div className="text-sm text-[#431039]/60 flex items-center h-full">
+                    No services to show yet.
+                  </div>
+                ) : (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={serviceMix}
+                      layout="vertical"
+                      margin={{ left: 60 }}
+                    >
+                      <XAxis type="number" hide />
+                      <YAxis
+                        dataKey="name"
+                        type="category"
+                        tickFormatter={(v) =>
+                          v
+                            .split(" ")
+                            .map(
+                              (w) => w.charAt(0).toUpperCase() + w.slice(1)
+                            )
+                            .join(" ")
+                        }
+                        fontSize={11}
+                      />
+                      <RechartsTooltip />
+                      <Bar
+                        dataKey="count"
+                        radius={[0, 4, 4, 0]}
+                        fill={COLORS[0]}
+                      />
+                    </BarChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
             </CardContent>
           </Card>
         </div>

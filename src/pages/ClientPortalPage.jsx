@@ -421,6 +421,10 @@ export default function ClientPortalPage() {
           limit: QUERY_LIMIT,
         });
 
+        if (!queries.length) {
+          setLoadingBookings(false);
+        }
+
         queries.forEach(({ source, ref }) => {
           const unsub = onSnapshot(
             ref,
