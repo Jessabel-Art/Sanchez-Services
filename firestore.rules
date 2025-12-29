@@ -9,12 +9,14 @@ service cloud.firestore {
     }
 
     function userEmailLower() {
+      // Firestore Rules do NOT support a lower() function.
+      // Use toLowerCase() on strings instead.
       return (isSignedIn() && request.auth.token.email != null)
-        ? lower(request.auth.token.email)
+        ? request.auth.token.email.toLowerCase()
         : "";
     }
 
-    // Profiles may live in /profiles; phoneNormalized is stored there (per your helper)
+    // Profiles may live in /profiles; phoneNormalized is stored there
     function userPhoneNormalized() {
       return (isSignedIn() &&
               exists(/databases/$(database)/documents/profiles/$(request.auth.uid)) &&
@@ -154,12 +156,11 @@ service cloud.firestore {
            neu.ownerKeys == old.ownerKeys &&
            neu.adminKeys == old.adminKeys;
 
-      // Normalize status
-      let oldStatus = (old.status == null) ? "pending" : lower(old.status);
-      let newStatus = (neu.status == null) ? oldStatus : lower(neu.status);
+      // Normalize status safely using toLowerCase()
+      let oldStatus = (old.status == null) ? "pending" : old.status.toLowerCase();
+      let newStatus = (neu.status == null) ? oldStatus : neu.status.toLowerCase();
 
       // Allow cancel from pending/confirmed/scheduled -> cancelled
-      // (matches your portal UX; tighten later if you want 48-hr logic)
       let statusOk =
         (newStatus == oldStatus) ||
         (
@@ -184,8 +185,7 @@ service cloud.firestore {
         old.keys().hasAll(neu.keys().removeAll(allowedMutableFields)) &&
         neu.keys().hasAll(old.keys().removeAll(allowedMutableFields));
 
-      // Review constraints: allow setting ONCE only (prevents edits/abuse)
-      // Convert conditional checks into pure boolean expressions (no control flow)
+      // Review constraints: allow setting ONCE only
       let reviewOk =
         (
           !("reviewId" in neu) ||
@@ -272,10 +272,6 @@ service cloud.firestore {
 
     /* ===================== Mail ===================== */
 
-    // Keep locked down for now. If booking submit is writing here, it will fail.
-    // Next chat (with BookingPage.jsx) we’ll decide:
-    // - allow limited client create, OR
-    // - move email creation to Cloud Function.
     match /mail/{id} {
       allow create: if isAdmin();
       allow read, update, delete: if false;
@@ -312,10 +308,7 @@ service cloud.firestore {
       allow write: if false;
     }
 
-    /* ===================== Global Admin Override ===================== */
-
-    match /{document=**} {
-      allow read, write: if isAdmin();
-    }
+    /* ===================== Default deny (safer than global admin override) ===================== */
+    // Removed the prior "Global Admin Override" catch-all. Anything not explicitly matched above is denied by default.
   }
 }
