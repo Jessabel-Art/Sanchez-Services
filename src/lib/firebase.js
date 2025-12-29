@@ -2,6 +2,7 @@ import { initializeApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 import { getFunctions } from "firebase/functions";
+import { getApp } from "firebase/app";
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -13,6 +14,15 @@ const firebaseConfig = {
 };
 
 const app = initializeApp(firebaseConfig);
+try {
+  const app = getApp();
+  console.log("[ENV CHECK] hostname:", window.location.hostname);
+  console.log("[ENV CHECK] projectId:", app.options.projectId);
+  console.log("[ENV CHECK] authDomain:", app.options.authDomain);
+} catch (e) {
+  console.warn("[ENV CHECK] getApp failed", e);
+}
+
 const auth = getAuth(app);
 const db = getFirestore(app);
 const functions = getFunctions(app);
