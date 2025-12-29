@@ -67,7 +67,11 @@ import {
 // Firestore helpers
 import { ensureProfile, getAddress } from "@/lib/db";
 import { updateProfileContact, updateProfileAddress, upsertProfile } from "@/lib/profileModel";
-import { normalizeBookingForRead, normalizeBookingForWrite } from "@/lib/bookings";
+import {
+  getBookingPaymentSummary,
+  normalizeBookingForRead,
+  normalizeBookingForWrite,
+} from "@/lib/bookings";
 import {
   buildUserBookingQueries,
   claimGuestBookings,
@@ -515,36 +519,11 @@ const bookingsWithFriendly = useMemo(() => {
     const endAt = r.endAt ?? null;
     const createdAt = r.createdAt ?? null;
 
-    // Normalize totals
-    const total = Number(
-      r.totalAmount ??
-        r.payment?.totalAmount ??
-        r.total ??
-        r.cost ??
-        0
-    );
-
-    const paid = Number(
-      r.amountPaid ??
-        r.payment?.amountPaid ??
-        r.paid ??
-        0
-    );
-
-    // Normalize deposit fields (from admin edits OR legacy)
-    const depositAmount = Number(
-      r.depositAmount ??
-        r.payment?.depositAmount ??
-        r.depositDue ??
-        0
-    );
-
-    const depositPaid = Boolean(
-      r.depositPaid ??
-        r.payment?.depositPaid ??
-        r.depositReceived ??
-        false
-    );
+    const paymentSummary = getBookingPaymentSummary(r);
+    const total = paymentSummary.totalAmount;
+    const paid = paymentSummary.amountPaid;
+    const depositAmount = paymentSummary.depositAmount;
+    const depositPaid = paymentSummary.depositPaid;
 
     return {
       id: r.id,

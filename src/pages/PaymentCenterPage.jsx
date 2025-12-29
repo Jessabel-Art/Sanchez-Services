@@ -20,9 +20,10 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 
-import { db, auth, functions } from "@/lib/firebase";
-import { normalizeBookingForRead } from "@/lib/bookings";
-import { collection, doc, getDoc, onSnapshot, query, where } from "firebase/firestore";
+import { db, functions } from "@/lib/firebase";
+import { getBookingPaymentSummary, normalizeBookingForRead } from "@/lib/bookings";
+import { useAuth } from "@/context/AuthContext";
+import { collection, onSnapshot, query, where } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 
 import logoPrimary from "@/assets/logo/logo-primary.png";
@@ -34,12 +35,6 @@ function toDate(tsLike) {
   if (tsLike instanceof Date) return tsLike;
   const d = new Date(tsLike);
   return Number.isNaN(d.getTime()) ? null : d;
-}
-
-function normalizePhone(raw) {
-  const digits = String(raw || "").replace(/\D+/g, "");
-  if (digits.length === 11 && digits.startsWith("1")) return digits.slice(1);
-  return digits || null;
 }
 
 function dedupeById(rows) {
@@ -137,54 +132,18 @@ function prettifyMethodLabel(methodRaw) {
  * - remaining = max(total - effectivePaid, 0)
  */
 function computeBookingMoney(b) {
-  if (!b) {
-    return {
-      totalPrice: 0,
-      depositAmount: 0,
-      depositPaid: false,
-      basePaid: 0,
-      effectivePaid: 0,
-      remaining: 0,
-      refunded: false,
-      refundedAmount: 0,
-    };
-  }
-
-  const totalPrice =
-    b.totalPrice != null
-      ? Number(b.totalPrice)
-      : b.cost != null
-      ? Number(b.cost)
-      : 0;
-
-  const depositAmount = Number(b.depositAmount || 0);
-  const depositPaid = !!b.depositPaid;
-
-  // Non-deposit payment portion (what admin stores as amountPaid)
-  const basePaid = Number(b.amountPaid ?? b.paid ?? 0);
-
-  const refundedAmount = Number(b.refundedAmount || 0);
-  const refunded = !!b.refunded || refundedAmount > 0;
-
-  // How much actually counts toward clearing the total
-  const effectivePaid = basePaid + (depositPaid ? depositAmount : 0);
-
-  // Detect cancellation (both spellings)
-  const status = String(b.status || "").toLowerCase();
-  const isCancelled = status === "cancelled" 
-
-  // Cancelled or refunded bookings have no remaining balance
-  const remaining = (isCancelled || refunded) ? 0 : Math.max(totalPrice - effectivePaid, 0);
+  const summary = getBookingPaymentSummary(b);
 
   return {
-    totalPrice,
-    depositAmount,
-    depositPaid,
-    basePaid,
-    effectivePaid,
-    remaining,
-    refunded,
-    refundedAmount,
+    totalPrice: summary.totalAmount,
+    depositAmount: summary.depositAmount,
+    depositPaid: summary.depositPaid,
+    basePaid: summary.amountPaid,
+    effectivePaid: summary.effectivePaid,
+    remaining: summary.remaining,
+    refunded: summary.refunded,
+    refundedAmount: summary.refundedAmount,
+    isCancelled: summary.isCancelled,
   };
 }
 
@@ -225,13 +184,10 @@ function derivePaymentInfo(b) {
     remaining,
     refunded,
     refundedAmount,
+    isCancelled,
   } = computeBookingMoney(b);
 
   const anyPayment = depositPaid || basePaid > 0;
-
-  // Detect cancellation for payment status label
-  const status = String(b.status || "").toLowerCase();
-  const isCancelled = status === "cancelled" 
 
   let paymentStatus = "Unpaid";
   if (refunded) {
@@ -617,6 +573,7 @@ function buildInvoiceLineItems(booking, info, addressOverride) {
 
 const PaymentCenterPage = () => {
   const navigate = useNavigate();
+  const { user, authReady } = useAuth();
   const [bookings, setBookings] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
@@ -669,63 +626,68 @@ const PaymentCenterPage = () => {
       setLoadError(null);
     };
 
-    const run = async () => {
-      const user = auth.currentUser;
-      if (!user) {
+    if (!authReady) {
+      setLoading(true);
+      return () => {};
+    }
+
+    if (!user) {
+      setLoading(false);
+      setBookings([]);
+      setLoadError(null);
+      return () => {};
+    }
+
+    setLoading(true);
+
+    const bookingsRef = collection(db, "bookings");
+    const qUid = query(bookingsRef, where("userId", "==", user.uid));
+
+    const unsubUid = onSnapshot(
+      qUid,
+      (snap) => {
+        const rows = snap.docs.map((d) =>
+          normalizeBookingForRead({ id: d.id, ...d.data() })
+        );
+        mergeBookingsFromSource(rows, "uid");
+      },
+      (err) => {
+        const isPermissionDenied = err?.code === "permission-denied";
+
+        if (isPermissionDenied) {
+          // Permission-denied should NOT occur for uid queries (client owns their data).
+          console.warn(
+            "[payment-center] Permission denied on uid query (unexpected)",
+            { code: err?.code, message: err?.message }
+          );
+        } else {
+          console.error("[payment-center] uid query error", {
+            code: err?.code,
+            message: err?.message,
+            queryType: "uid",
+          });
+        }
+
+        setLoadError(err?.message || String(err));
         setLoading(false);
-        setBookings([]);
-        return;
-      }
 
-      const bookingsRef = collection(db, "bookings");
-      const qUid = query(bookingsRef, where("userId", "==", user.uid));
-
-      const unsubUid = onSnapshot(
-        qUid,
-        (snap) => {
-          const rows = snap.docs.map((d) => normalizeBookingForRead({ id: d.id, ...d.data() }));
-          mergeBookingsFromSource(rows, "uid");
-        },
-        (err) => {
-          const isPermissionDenied = err?.code === "permission-denied";
-          
-          if (isPermissionDenied) {
-            // Permission-denied should NOT occur for uid queries (client owns their data).
-            console.warn(
-              "[payment-center] Permission denied on uid query (unexpected)",
-              { code: err?.code, message: err?.message }
-            );
-          } else {
-            console.error("[payment-center] uid query error", {
-              code: err?.code,
-              message: err?.message,
-              queryType: "uid",
-            });
-          }
-          
-          setLoadError(err?.message || String(err));
-          setLoading(false);
-          
-          if (process.env.NODE_ENV !== "production") {
-            const errorCode = err?.code || "";
-            if (errorCode === "permission-denied" || errorCode === "failed-precondition") {
-              setFirestoreErrors((prev) => [
-                ...prev,
-                { queryType: "uid", code: errorCode, message: err?.message || String(err) },
-              ]);
-            }
+        if (process.env.NODE_ENV !== "production") {
+          const errorCode = err?.code || "";
+          if (errorCode === "permission-denied" || errorCode === "failed-precondition") {
+            setFirestoreErrors((prev) => [
+              ...prev,
+              { queryType: "uid", code: errorCode, message: err?.message || String(err) },
+            ]);
           }
         }
-      );
-      unsubs.push(unsubUid);
+      }
+    );
+    unsubs.push(unsubUid);
 
-      // NOTE: For client users, we only query by userId (uid query above).
-      // Email and phone-based queries are blocked by Firestore rules for non-admin users.
-      // Admin users should use admin pages (AdminPaymentsPage) which has email/phone fallbacks.
-      // This prevents permission-denied errors in client PaymentCenter.
-    };
-
-    run();
+    // NOTE: For client users, we only query by userId (uid query above).
+    // Email and phone-based queries are blocked by Firestore rules for non-admin users.
+    // Admin users should use admin pages (AdminPaymentsPage) which has email/phone fallbacks.
+    // This prevents permission-denied errors in client PaymentCenter.
 
     return () => {
       isActive = false;
@@ -735,7 +697,7 @@ const PaymentCenterPage = () => {
         } catch {}
       });
     };
-  }, []);
+  }, [authReady, user]);
 
   const now = new Date();
 
@@ -754,9 +716,10 @@ const PaymentCenterPage = () => {
       if (!start || start >= now) return false;
 
       const status = String(b.status || "").toLowerCase();
-      const depositPaid = !!b.depositPaid;
-      const paid = Number(b.paid || 0);
-      const refunded = !!b.refunded || Number(b.refundedAmount || 0) > 0;
+      const paymentSummary = getBookingPaymentSummary(b);
+      const depositPaid = paymentSummary.depositPaid;
+      const paid = paymentSummary.amountPaid;
+      const refunded = paymentSummary.refunded;
 
       const anyPayment = depositPaid || paid > 0 || refunded;
       const doneStatus =
@@ -886,8 +849,6 @@ const PaymentCenterPage = () => {
     );
   };
 
-  const user = auth.currentUser;
-
   const { nextUpcoming, totalDueNow } = summary;
 
   const nextStart = nextUpcoming
@@ -933,9 +894,7 @@ const PaymentCenterPage = () => {
       return;
     }
 
-    const user = auth.currentUser;
-
-    if (!user) {
+    if (!user || !authReady) {
       setPayError("You need to be signed in to pay your balance online.");
       return;
     }
@@ -1080,6 +1039,7 @@ const PaymentCenterPage = () => {
       if (!win) return;
 
       const orderCode = booking.orderCode || booking.id?.slice(0, 8) || "";
+      const logoUrl = new URL(logoPrimary, window.location.origin).toString();
 
       const invoiceDate = new Date().toLocaleDateString(undefined, {
         month: "short",
@@ -1154,7 +1114,7 @@ const PaymentCenterPage = () => {
               <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:28px;">
                 <div style="display:flex; align-items:center; gap:12px;">
                   <div style="width:40px; height:40px; border-radius:999px; overflow:hidden; display:flex; align-items:center; justify-content:center; border:1px solid #f1d7ff;">
-                    <img src="${logoPrimary}" alt="Sanchez Services" style="max-width:100%; max-height:100%; object-fit:contain;" />
+                    <img src="${logoUrl}" alt="Sanchez Services" style="max-width:100%; max-height:100%; object-fit:contain;" />
                   </div>
                   <div>
                     <div style="font-size:14px; font-weight:600; letter-spacing:0.14em; text-transform:uppercase; color:#7e4b8e;">Sanchez Services</div>
@@ -1379,7 +1339,7 @@ const PaymentCenterPage = () => {
         )}
 
         {/* Summary: next appointment + amount due now */}
-        {user && (
+        {user && authReady && (
           <Card className="bg-white border-plum/10 shadow-sm">
             <CardContent className="py-3 sm:py-4 md:py-5">
               <div className="grid gap-4 sm:gap-5 md:gap-6 md:grid-cols-2 items-center">
@@ -1453,7 +1413,7 @@ const PaymentCenterPage = () => {
         )}
 
         {/* If not signed in, show gate and stop */}
-        {!user && (
+        {!user && authReady && (
           <Card className="bg-white border-plum/10 shadow-sm">
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-plum">
@@ -1476,7 +1436,7 @@ const PaymentCenterPage = () => {
           </Card>
         )}
 
-        {user && (
+        {user && authReady && (
           <>
             {/* Top row: upcoming + billing side by side */}
             <div className="grid gap-4 md:grid-cols-2">

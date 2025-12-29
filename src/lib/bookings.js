@@ -130,3 +130,71 @@ export function normalizeBookingForRead(docData) {
   
   return result;
 }
+
+/**
+ * Normalize payment-related fields across legacy booking schemas.
+ * Ensures consistent totals and paid/deposit math between pages.
+ */
+export function getBookingPaymentSummary(booking) {
+  const totalAmount = Number(
+    booking?.totalAmount ??
+      booking?.payment?.totalAmount ??
+      booking?.totalPrice ??
+      booking?.total ??
+      booking?.cost ??
+      0
+  );
+
+  const amountPaid = Number(
+    booking?.amountPaid ??
+      booking?.payment?.amountPaid ??
+      booking?.paid ??
+      0
+  );
+
+  const depositAmount = Number(
+    booking?.depositAmount ??
+      booking?.payment?.depositAmount ??
+      booking?.depositDue ??
+      0
+  );
+
+  const depositPaid = Boolean(
+    booking?.depositPaid ??
+      booking?.payment?.depositPaid ??
+      booking?.depositReceived ??
+      false
+  );
+
+  const refundedAmount = Number(
+    booking?.refundedAmount ??
+      booking?.payment?.refundedAmount ??
+      0
+  );
+
+  const refunded = Boolean(
+    booking?.refunded ??
+      booking?.payment?.refunded ??
+      refundedAmount > 0
+  );
+
+  const status = String(booking?.status || "").toLowerCase();
+  const isCancelled = status === "cancelled" || status === "canceled";
+
+  const effectivePaid = amountPaid + (depositPaid ? depositAmount : 0);
+  const remaining = (isCancelled || refunded)
+    ? 0
+    : Math.max(totalAmount - effectivePaid, 0);
+
+  return {
+    totalAmount,
+    amountPaid,
+    depositAmount,
+    depositPaid,
+    refunded,
+    refundedAmount,
+    effectivePaid,
+    remaining,
+    isCancelled,
+  };
+}
