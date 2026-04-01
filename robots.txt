@@ -1,0 +1,12 @@
+User-agent: *
+Allow: /
+Disallow: /auth
+Disallow: /portal
+Disallow: /admin
+Disallow: /payment-center
+Disallow: /payment-confirmation
+Disallow: /brand-style
+Disallow: /seed
+Disallow: /account
+
+Sitemap: https://sanchezproservices.com/sitemap.xml
