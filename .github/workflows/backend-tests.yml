@@ -1,0 +1,62 @@
+name: PHP backend tests
+
+# Tests only — this workflow never deploys and uses no secrets.
+on:
+  push:
+    branches-ignore: [main, deploy]
+    paths: ['backend/**', 'src/**', 'functions/**', 'vite.config.js', 'package*.json', '.github/workflows/backend-tests.yml']
+  pull_request:
+    paths: ['backend/**', 'src/**', 'functions/**', 'vite.config.js', 'package*.json']
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      mariadb:
+        image: mariadb:10.11
+        env:
+          MARIADB_ROOT_PASSWORD: ci_root_pw
+          MARIADB_DATABASE: ss_test
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=5s --health-timeout=5s --health-retries=20
+    env:
+      SS_TEST_DB_DSN: mysql:host=127.0.0.1;port=3306;dbname=ss_test;charset=utf8mb4
+      SS_TEST_DB_USER: root
+      SS_TEST_DB_PASSWORD: ci_root_pw
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: pdo_mysql, curl, openssl, mbstring, sodium
+          coverage: none
+      - name: Install PHP dependencies
+        working-directory: backend
+        run: composer install --no-interaction --prefer-dist
+      - name: Lint
+        working-directory: backend
+        run: find src bin public tests -name '*.php' -print0 | xargs -0 -n1 php -l > /dev/null
+      - name: PHPUnit (unit + integration)
+        working-directory: backend
+        run: vendor/bin/phpunit
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Frontend tests and both builds
+        run: |
+          npm ci
+          npx vitest --run
+          npx vite build --outDir /tmp/dist-firebase
+          VITE_BACKEND=php npx vite build --outDir /tmp/dist-php
+          ! grep -q "firestore.googleapis.com" /tmp/dist-php/assets/*.js
+      - name: JS parity fixtures are current
+        run: |
+          npm --prefix functions ci
+          TZ=America/New_York node backend/tools/generate-parity-fixtures.cjs
+          git diff --exit-code backend/tests/fixtures/js-parity.json

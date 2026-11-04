@@ -1,0 +1,60 @@
+{
+  "projectId": "demo-sanchez",
+  "exportedAt": "2026-11-04T17:08:37.413Z",
+  "tool": "backend/tools/migration/export-firestore.cjs",
+  "collections": {
+    "bookings": {
+      "count": 2,
+      "sha256": "4ba45ee8e5ed62aa60af5d0e11cb353475e2c5c40d94387acc6e1d1611e18360"
+    },
+    "profiles": {
+      "count": 2,
+      "sha256": "94011aa48a4345fe11c4174b6588e90ba793508542f25b194ac4f112ab9f0f37"
+    },
+    "admins": {
+      "count": 1,
+      "sha256": "5c6ee3f9fddd7512a7bf5cfdc3da5abfe9171b61606388865ff8f39b218dc2fb"
+    },
+    "reviews": {
+      "count": 1,
+      "sha256": "e317d2a7f5c51f7549c67c151bb5f98f7fb00383ae47eeb2cb3dae057f8897fb"
+    },
+    "blackouts": {
+      "count": 1,
+      "sha256": "48e86ea03e80eb75d1ca46d20a76f1353cb2f4862bee1fe4a72bb15d64f59736"
+    },
+    "payments": {
+      "count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "reports": {
+      "count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "services": {
+      "count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "addresses": {
+      "count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "availability": {
+      "count": 1,
+      "sha256": "24c492a22854aedefd446709df401dac2b1f0a45e34c18aa1a3654bea563670f"
+    },
+    "bookingReservations": {
+      "count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "mail": {
+      "count": 1,
+      "sha256": "0e5652abe31190c2419c6c97fdee5d9e4a2d384f81c666cf3076afa94a64444e"
+    },
+    "profiles/*/addresses": {
+      "count": 1,
+      "sha256": "78a2484e4d9853951c25b26b49a1d248467783a3c757b168c67e02f64932b501"
+    }
+  },
+  "unknownCollections": []
+}

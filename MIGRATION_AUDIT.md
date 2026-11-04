@@ -2,6 +2,7 @@
 
 - **Audit date:** 2026-11-04
 - **Scope:** Read-only audit and migration plan. No backend migration started, no production resources touched, nothing committed, pushed or deployed.
+- **Implementation status:** see `docs/MIGRATION_IMPLEMENTATION.md` (PHP backend built and tested on branch `claude/dreamy-goldberg-vo1q9w`; not deployed).
 - **Notation:** **[CODE]** marks a finding read directly from the repository. **[REC]** marks a recommendation. **[VERIFY]** marks an assumption that has to be checked in a console or on the host before implementation.
 
 ---

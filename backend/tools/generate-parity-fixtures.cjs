@@ -139,6 +139,6 @@ const reminderNotes = bookingsForAmounts.map((b) => ({ booking: b, note: I.getRe
 const addresses = [{}, { address: '1 Main St' }, { address: { line1: '1 Main', city: 'Providence', state: 'RI', zip: '02903' } }, { address: { street: 'S', line2: 'Apt 2', postalCode: '02860' } }, { addressLine1: 'Legacy 5' }]
   .map((b) => ({ booking: b, out: I.formatBookingAddress(b) }));
 
-const out = { generatedWith: { tz: process.env.TZ || null, node: process.version }, pricing, feeCases, amounts, emails, patchCases, slotCases, blocked, overlaps, addDays, reminderNotes, addresses };
+const out = { generatedWith: { tz: process.env.TZ || null }, pricing, feeCases, amounts, emails, patchCases, slotCases, blocked, overlaps, addDays, reminderNotes, addresses };
 fs.writeFileSync(path.join(__dirname, '../tests/fixtures/js-parity.json'), JSON.stringify(out, null, 1));
 console.log('fixtures written:', Object.fromEntries(Object.entries(out).filter(([k]) => Array.isArray(out[k])).map(([k, v]) => [k, v.length])));

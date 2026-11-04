@@ -1,16 +1,22 @@
-# Route every /api/* request to index.php; never serve other files from this folder.
+# Route every /api/* request to index.php.
 Options -Indexes
 <IfModule mod_rewrite.c>
   RewriteEngine On
   # Keep the Authorization header (some Apache/LiteSpeed setups drop it)
   RewriteCond %{HTTP:Authorization} .
   RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
-  RewriteCond %{REQUEST_FILENAME} !index\.php$
+  RewriteCond %{REQUEST_FILENAME} !-f
+  RewriteRule ^ index.php [L,QSA]
+  # Only index.php may execute here; any other real file (e.g. app-root.php) is routed to index.php too.
+  RewriteCond %{REQUEST_FILENAME} -f
+  RewriteCond %{REQUEST_FILENAME} !/index\.php$
   RewriteRule ^ index.php [L,QSA]
 </IfModule>
-<FilesMatch "^(?!index\.php$).+">
+<Files "app-root.php">
   Require all denied
-</FilesMatch>
+</Files>
 <IfModule mod_headers.c>
+  # API responses are private: drop any inherited/CDN cache header and send exactly one no-store.
+  Header onsuccess unset Cache-Control
   Header always set Cache-Control "no-store, private"
 </IfModule>

@@ -1,0 +1,5 @@
+{"users":[
+ {"localId":"UIDclient000000000000000001","email":"ana@example.test","emailVerified":true,"displayName":"Ana Client","passwordHash":"bm90LWEtcmVhbC1oYXNo","salt":"c2FsdA==","providerUserInfo":[{"providerId":"password","email":"ana@example.test"}],"createdAt":"1764601200000","lastSignedInAt":"1780000000000"},
+ {"localId":"UIDowner0000000000000000001","email":"owner@example.test","emailVerified":true,"passwordHash":"bm90LWEtcmVhbC1oYXNo","salt":"c2FsdA==","providerUserInfo":[{"providerId":"password"},{"providerId":"google.com"}],"createdAt":"1761998400000"},
+ {"localId":"UIDphoneonly00000000000000001","phoneNumber":"+14015550199","providerUserInfo":[{"providerId":"phone"}],"createdAt":"1761998400000"}
+]}
