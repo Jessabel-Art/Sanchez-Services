@@ -43,35 +43,4 @@ final class OpsController
         $result = $job === 'due' ? $this->app->jobs->runDue() : $this->app->jobs->run($job);
         return Response::json(['ok' => true, 'result' => $result]);
     }
-
-    /** POST /api/sweepCompleteBookings — admin maintenance sweep (same request/response shape). */
-    public function sweep(Request $req): Response
-    {
-        $u = $this->app->auth->currentUser();
-        if (!$u) {
-            return Response::json(['ok' => false, 'error' => 'Invalid or expired admin token'], 401);
-        }
-        if (!$this->app->rules->isAdminServer($u)) {
-            return Response::json(['ok' => false, 'error' => 'Admins only'], 403);
-        }
-        $b = $req->json();
-        $bool = static function ($v, bool $d): bool {
-            if ($v === null) {
-                return $d;
-            }
-            if (is_bool($v)) {
-                return $v;
-            }
-            $s = strtolower((string) $v);
-            return $s === 'true' ? true : ($s === 'false' ? false : $d);
-        };
-        $grace = (int) ($req->query['graceMs'] ?? 7200000);
-        $result = $this->app->jobs->sweep(
-            $grace,
-            $bool($b['dryRun'] ?? null, false),
-            $bool($b['removeTestBookings'] ?? null, true),
-            $bool($b['removeCancelledDeclined'] ?? null, false)
-        );
-        return Response::json($result);
-    }
 }

@@ -4,9 +4,6 @@ declare(strict_types=1);
 namespace SanchezServices\Http;
 
 use SanchezServices\App;
-use SanchezServices\Controllers\AuthController;
-use SanchezServices\Controllers\FunctionsController;
-use SanchezServices\Controllers\GatewayController;
 use SanchezServices\Controllers\OpsController;
 use SanchezServices\Controllers\StripeWebhookController;
 
@@ -16,15 +13,22 @@ final class Kernel
 
     public function __construct(private App $app)
     {
-        $this->router = new Router();
-        $auth = new AuthController($app);
-        $gw = new GatewayController($app);
-        $fn = new FunctionsController($app);
+        $this->router = $r = new Router();
+        $pub = new \SanchezServices\Controllers\PublicController($app);
+        $auth = new \SanchezServices\Controllers\AuthController($app);
+        $me = new \SanchezServices\Controllers\MeController($app);
+        $bk = new \SanchezServices\Controllers\BookingController($app);
+        $ad = new \SanchezServices\Controllers\AdminController($app);
         $ops = new OpsController($app);
         $hook = new StripeWebhookController($app);
-        $r = $this->router;
 
         $r->add('GET', '/api/health', [$ops, 'health'], ['session' => false]);
+        $r->add('GET', '/api/catalog', [$pub, 'catalog'], ['session' => false]);
+        $r->add('POST', '/api/quote', [$pub, 'quote'], ['session' => false, 'csrf' => false]);
+        $r->add('GET', '/api/availability', [$pub, 'day']);
+        $r->add('GET', '/api/availability/month', [$pub, 'month'], ['session' => false]);
+        $r->add('GET', '/api/reviews', [$pub, 'reviews'], ['session' => false]);
+
         $r->add('GET', '/api/auth/session', [$auth, 'session']);
         $r->add('POST', '/api/auth/register', [$auth, 'register']);
         $r->add('POST', '/api/auth/login', [$auth, 'login']);
@@ -33,14 +37,51 @@ final class Kernel
         $r->add('POST', '/api/auth/password/reset', [$auth, 'reset']);
         $r->add('POST', '/api/auth/password/change', [$auth, 'changePassword']);
         $r->add('POST', '/api/auth/email', [$auth, 'changeEmail']);
-        $r->add('POST', '/api/auth/profile', [$auth, 'updateProfile']);
+        $r->add('POST', '/api/auth/verify', [$auth, 'verify']);
+        $r->add('POST', '/api/auth/verify/resend', [$auth, 'resendVerification']);
 
-        $r->add('POST', '/api/db/get', [$gw, 'get']);
-        $r->add('POST', '/api/db/query', [$gw, 'query']);
-        $r->add('POST', '/api/db/commit', [$gw, 'commit']);
+        $r->add('GET', '/api/me/profile', [$me, 'profile']);
+        $r->add('PATCH', '/api/me/profile', [$me, 'updateProfile']);
+        $r->add('GET', '/api/me/addresses', [$me, 'addresses']);
+        $r->add('POST', '/api/me/addresses', [$me, 'addAddress']);
+        $r->add('PATCH', '/api/me/addresses/{id}', [$me, 'updateAddress']);
+        $r->add('DELETE', '/api/me/addresses/{id}', [$me, 'deleteAddress']);
+        $r->add('GET', '/api/me/bookings', [$me, 'bookings']);
 
-        $r->add('POST', '/api/fn/{name}', [$fn, 'call']);
-        $r->add('POST', '/api/sweepCompleteBookings', [$ops, 'sweep']);
+        $r->add('POST', '/api/bookings', [$bk, 'create']);
+        $r->add('GET', '/api/bookings/{ref}', [$bk, 'show']);
+        $r->add('POST', '/api/bookings/{ref}/checkout', [$bk, 'checkout']);
+        $r->add('POST', '/api/bookings/{ref}/payment-sync', [$bk, 'sync']);
+        $r->add('POST', '/api/bookings/{ref}/reschedule', [$bk, 'reschedule']);
+        $r->add('POST', '/api/bookings/{ref}/cancel', [$bk, 'cancel']);
+        $r->add('PATCH', '/api/bookings/{ref}/notes', [$bk, 'notes']);
+        $r->add('POST', '/api/bookings/{ref}/review', [$bk, 'review']);
+        $r->add('GET', '/api/bookings/{ref}/invoice', [$bk, 'invoice']);
+
+        $r->add('GET', '/api/admin/bookings', [$ad, 'bookings']);
+        $r->add('POST', '/api/admin/bookings', [$ad, 'createBooking']);
+        $r->add('GET', '/api/admin/bookings/{ref}', [$ad, 'booking']);
+        $r->add('PATCH', '/api/admin/bookings/{ref}', [$ad, 'updateBooking']);
+        $r->add('POST', '/api/admin/bookings/{ref}/status', [$ad, 'setStatus']);
+        $r->add('POST', '/api/admin/bookings/{ref}/reschedule', [$ad, 'reschedule']);
+        $r->add('POST', '/api/admin/bookings/{ref}/payments', [$ad, 'recordPayment']);
+        $r->add('POST', '/api/admin/bookings/{ref}/clear-attention', [$ad, 'clearAttention']);
+        $r->add('POST', '/api/admin/payments/{id}/refund', [$ad, 'refund']);
+        $r->add('POST', '/api/admin/payments/{id}/void', [$ad, 'voidPayment']);
+        $r->add('GET', '/api/admin/payments', [$ad, 'payments']);
+        $r->add('GET', '/api/admin/calendar', [$ad, 'calendar']);
+        $r->add('GET', '/api/admin/blackouts', [$ad, 'blackouts']);
+        $r->add('POST', '/api/admin/blackouts', [$ad, 'addBlackout']);
+        $r->add('DELETE', '/api/admin/blackouts/{id}', [$ad, 'deleteBlackout']);
+        $r->add('GET', '/api/admin/clients', [$ad, 'clients']);
+        $r->add('GET', '/api/admin/clients/{id}', [$ad, 'client']);
+        $r->add('PATCH', '/api/admin/clients/{id}', [$ad, 'updateClient']);
+        $r->add('GET', '/api/admin/reviews', [$ad, 'reviews']);
+        $r->add('POST', '/api/admin/reviews/{id}/{action}', [$ad, 'moderateReview']);
+        $r->add('GET', '/api/admin/reports', [$ad, 'reports']);
+        $r->add('GET', '/api/admin/system', [$ad, 'system']);
+        $r->add('POST', '/api/admin/system/jobs/{job}', [$ad, 'runJob']);
+        $r->add('POST', '/api/admin/system/email/{id}/retry', [$ad, 'retryEmail']);
 
         $r->add('POST', '/api/stripe/webhook', [$hook, 'handle'], ['session' => false, 'csrf' => false]);
         $r->add('POST', '/api/jobs/run', [$ops, 'runJob'], ['session' => false, 'csrf' => false]);
@@ -72,8 +113,10 @@ final class Kernel
             }
             $res = ($route['handler'])($req);
         } catch (HttpError $e) {
+            $this->app->outbox->discardPending();
             $res = Response::error($e);
         } catch (\Throwable $e) {
+            $this->app->outbox->discardPending();
             $this->app->log->error('unhandled exception', [
                 'path' => $path,
                 'type' => get_class($e),
@@ -137,11 +180,6 @@ final class Kernel
     {
         $expected = $this->app->session->get('csrf');
         $given = $req->header('x-csrf-token');
-        if ($given === null) {
-            // Maintenance sweep sends "Authorization: Bearer <token>" (the shim's getIdToken()).
-            $auth = $req->header('authorization') ?? '';
-            $given = str_starts_with($auth, 'Bearer ') ? substr($auth, 7) : null;
-        }
         if (!is_string($expected) || $expected === '' || !is_string($given) || !hash_equals($expected, $given)) {
             throw new HttpError('permission-denied', 'Invalid or missing CSRF token. Reload the page and try again.');
         }
@@ -157,7 +195,7 @@ final class Kernel
             litespeed_finish_request();
         }
         try {
-            $this->app->outbox->flushRequestQueue();
+            $this->app->outbox->flush();
         } catch (\Throwable $e) {
             $this->app->log->error('outbox flush failed', ['error' => $e->getMessage()]);
         }

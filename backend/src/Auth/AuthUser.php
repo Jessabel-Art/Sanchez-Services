@@ -7,42 +7,31 @@ final class AuthUser
 {
     public function __construct(
         public readonly int $id,
-        public readonly string $uid,
         public readonly string $email,
         public readonly string $emailLower,
         public readonly bool $emailVerified,
         public readonly string $role,
-        public readonly ?string $displayName,
-        public readonly ?string $phoneNumber,
+        public readonly ?string $name,
+        public readonly ?string $phone,
     ) {
     }
 
-    /** @param array<string,mixed> $row */
     public static function fromRow(array $row): self
     {
-        return new self(
-            (int) $row['id'],
-            (string) $row['uid'],
-            (string) $row['email'],
-            (string) $row['email_lower'],
-            $row['email_verified_at'] !== null,
-            (string) $row['role'],
-            $row['display_name'] !== null ? (string) $row['display_name'] : null,
-            $row['phone_number'] !== null ? (string) $row['phone_number'] : null,
-        );
+        return new self((int) $row['id'], (string) $row['email'], (string) $row['email_lower'], $row['email_verified_at'] !== null,
+            (string) $row['role'], $row['name'] !== null ? (string) $row['name'] : null, $row['phone'] !== null ? (string) $row['phone'] : null);
     }
 
-    /** Shape returned to the frontend shim (Firebase User-like). */
-    public function toPublic(bool $isAdmin): array
+    public function isAdmin(): bool
+    {
+        return in_array($this->role, ['admin', 'owner'], true);
+    }
+
+    public function toApi(): array
     {
         return [
-            'uid' => $this->uid,
-            'email' => $this->email,
-            'emailVerified' => $this->emailVerified,
-            'displayName' => $this->displayName,
-            'phoneNumber' => $this->phoneNumber,
-            'role' => $this->role,
-            'isAdmin' => $isAdmin,
+            'id' => $this->id, 'email' => $this->email, 'emailVerified' => $this->emailVerified,
+            'name' => $this->name, 'phone' => $this->phone, 'role' => $this->role, 'isAdmin' => $this->isAdmin(),
         ];
     }
 }

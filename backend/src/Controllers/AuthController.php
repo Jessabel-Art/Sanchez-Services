@@ -5,7 +5,7 @@ namespace SanchezServices\Controllers;
 
 use SanchezServices\App;
 use SanchezServices\Auth\AuthUser;
-use SanchezServices\Http\HttpError;
+use SanchezServices\Http\Input;
 use SanchezServices\Http\Request;
 use SanchezServices\Http\Response;
 
@@ -15,82 +15,83 @@ final class AuthController
     {
     }
 
-    private function payload(?AuthUser $u): array
+    private function payload(?AuthUser $u): Response
     {
-        return [
-            'user' => $u ? $u->toPublic($this->app->rules->isAdmin($u)) : null,
+        return Response::json([
+            'user' => $u?->toApi(),
             'csrfToken' => $this->app->auth->csrfToken(),
             'pollIntervalSeconds' => $this->app->config->int('polling.interval_seconds', 30),
-        ];
+        ]);
     }
 
-    private static function str(array $b, string $k): string
+    /** Verified accounts pick up bookings an admin created for their email. */
+    private function claim(?AuthUser $u): ?AuthUser
     {
-        $v = $b[$k] ?? '';
-        if (!is_string($v)) {
-            throw HttpError::invalid("$k must be a string.");
+        if ($u) {
+            $this->app->bookings->claimForUser($u);
         }
-        return $v;
+        return $u;
     }
 
-    public function session(Request $req): Response
+    public function session(Request $r): Response
     {
-        return Response::json($this->payload($this->app->auth->currentUser()));
+        return $this->payload($this->app->auth->currentUser());
     }
 
-    public function register(Request $req): Response
+    public function register(Request $r): Response
     {
-        $b = $req->json();
-        $u = $this->app->auth->register(self::str($b, 'email'), self::str($b, 'password'), $req->ip);
-        return Response::json($this->payload($u));
+        $in = Input::from($r);
+        $u = $this->app->auth->register((string) $in->str('email', true, 254), (string) $in->str('password', true, 1024), $in->str('name', false, 200), $r->ip);
+        return $this->payload($u);
     }
 
-    public function login(Request $req): Response
+    public function login(Request $r): Response
     {
-        $b = $req->json();
-        $u = $this->app->auth->login(self::str($b, 'email'), self::str($b, 'password'), $req->ip);
-        return Response::json($this->payload($u));
+        $in = Input::from($r);
+        return $this->payload($this->claim($this->app->auth->login((string) $in->str('email', true, 254), (string) $in->str('password', true, 1024), $r->ip)));
     }
 
-    public function logout(Request $req): Response
+    public function logout(Request $r): Response
     {
         $this->app->auth->logout();
-        return Response::json(['user' => null]);
+        return $this->payload(null);
     }
 
-    public function forgot(Request $req): Response
+    public function forgot(Request $r): Response
     {
-        $this->app->auth->forgotPassword(self::str($req->json(), 'email'), $req->ip);
+        $this->app->auth->forgotPassword((string) Input::from($r)->str('email', true, 254), $r->ip);
         return Response::json(['ok' => true]);
     }
 
-    public function reset(Request $req): Response
+    public function reset(Request $r): Response
     {
-        $b = $req->json();
-        $u = $this->app->auth->resetPassword(self::str($b, 'token'), self::str($b, 'password'), $req->ip);
-        return Response::json($this->payload($u));
+        $in = Input::from($r);
+        return $this->payload($this->claim($this->app->auth->resetPassword((string) $in->str('token', true, 200), (string) $in->str('password', true, 1024), $r->ip)));
     }
 
-    public function changePassword(Request $req): Response
+    public function verify(Request $r): Response
     {
-        $b = $req->json();
-        $this->app->auth->changePassword(self::str($b, 'currentPassword'), self::str($b, 'newPassword'));
-        return Response::json($this->payload($this->app->auth->currentUser()));
+        $u = $this->app->auth->verifyEmail((string) Input::from($r)->str('token', true, 200));
+        $this->claim($u);
+        return $this->payload($this->app->auth->currentUser());
     }
 
-    public function changeEmail(Request $req): Response
+    public function resendVerification(Request $r): Response
     {
-        $b = $req->json();
-        $pw = isset($b['password']) && is_string($b['password']) ? $b['password'] : null;
-        $u = $this->app->auth->changeEmail(self::str($b, 'email'), $pw);
-        return Response::json($this->payload($u));
+        $this->app->auth->resendVerification($r->ip);
+        return Response::json(['ok' => true]);
     }
 
-    public function updateProfile(Request $req): Response
+    public function changePassword(Request $r): Response
     {
-        $b = $req->json();
-        $name = array_key_exists('displayName', $b) ? ($b['displayName'] === null ? null : self::str($b, 'displayName')) : null;
-        $u = $this->app->auth->updateProfile($name);
-        return Response::json($this->payload($u));
+        $in = Input::from($r);
+        $this->app->auth->changePassword((string) $in->str('currentPassword', true, 1024), (string) $in->str('newPassword', true, 1024));
+        return $this->payload($this->app->auth->currentUser());
+    }
+
+    public function changeEmail(Request $r): Response
+    {
+        $in = Input::from($r);
+        return $this->payload($this->app->auth->changeEmail((string) $in->email('email'), $in->str('password', false, 1024)));
     }
 }

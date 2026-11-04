@@ -25,9 +25,24 @@ abstract class IntegrationTestCase extends TestCase
             self::$env = self::boot();
         }
         self::resetDatabase();
-        file_put_contents(self::$env['stripeState'], json_encode(['seq' => 0, 'sessions' => [], 'customers' => [], 'requests' => []]));
+        file_put_contents(self::$env['stripeState'], json_encode(['seq' => 0, 'sessions' => [], 'refunds' => [], 'requests' => [], 'idem' => []]));
         @unlink(self::$env['mailLog']);
         static::$app = new App(Config::load(self::$env['configFile']));
+    }
+
+    /** Every test starts from empty tables (schema kept). */
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $pdo = static::$app->db->pdo();
+        $pdo->exec('SET FOREIGN_KEY_CHECKS = 0');
+        foreach ($pdo->query('SHOW TABLES')->fetchAll(\PDO::FETCH_COLUMN) as $t) {
+            if ($t !== 'schema_migrations') {
+                $pdo->exec("TRUNCATE TABLE `{$t}`");
+            }
+        }
+        $pdo->exec('SET FOREIGN_KEY_CHECKS = 1');
+        file_put_contents(self::$env['stripeState'], json_encode(['seq' => 0, 'sessions' => [], 'refunds' => [], 'requests' => [], 'idem' => []]));
     }
 
     private static function boot(): array
@@ -42,7 +57,7 @@ abstract class IntegrationTestCase extends TestCase
         }
         $config = [
             'app' => ['env' => 'test', 'url' => "http://127.0.0.1:{$apiPort}", 'key' => base64_encode(random_bytes(32)), 'debug' => true],
-            'business' => ['admin_notification_emails' => ['owner@example.test']],
+            'business' => ['admin_notification_emails' => ['owner@example.test'], 'phone' => '(401) 555-0100'],
             'db' => ['dsn' => $dsn, 'user' => getenv('SS_TEST_DB_USER') ?: 'ss', 'password' => getenv('SS_TEST_DB_PASSWORD') ?: 'ss_local_test'],
             'session' => ['secure' => false],
             'stripe' => ['secret_key' => 'sk_test_fake', 'webhook_secret' => 'whsec_test_secret', 'api_base' => "http://127.0.0.1:{$stripePort}"],
@@ -130,22 +145,73 @@ abstract class IntegrationTestCase extends TestCase
     }
 
     /** Registers a user through the API and returns a signed-in client. */
-    protected function registerClient(string $email, string $password = 'correct-horse-1'): HttpClient
+    protected function registerClient(string $email, string $password = 'correct-horse-1', string $name = 'Test Client'): HttpClient
     {
         $c = $this->client();
-        $r = $c->post('/api/auth/register', ['email' => $email, 'password' => $password]);
+        $r = $c->post('/api/auth/register', ['email' => $email, 'password' => $password, 'name' => $name]);
         $this->assertSame(200, $r['status'], json_encode($r['json']));
         return $c;
     }
 
-    protected function makeAdmin(string $email): void
+    protected function makeAdmin(string $email): HttpClient
     {
         static::$app->db->run("UPDATE users SET role = 'admin' WHERE email_lower = ?", [strtolower($email)]);
+        // Role changes invalidate the session (auth version) — sign in again.
+        $c = $this->client();
+        $this->assertSame(200, $c->post('/api/auth/login', ['email' => $email, 'password' => 'correct-horse-1'])['status']);
+        return $c;
     }
 
-    protected function uidOf(string $email): string
+    protected function adminClient(string $email = 'boss@example.test'): HttpClient
     {
-        return (string) static::$app->db->scalar('SELECT uid FROM users WHERE email_lower = ?', [strtolower($email)]);
+        if (!static::$app->users->rowByEmail($email)) {
+            $this->registerClient($email, 'correct-horse-1', 'Boss');
+        }
+        return $this->makeAdmin($email);
+    }
+
+    protected function userId(string $email): int
+    {
+        return (int) static::$app->db->scalar('SELECT id FROM users WHERE email_lower = ?', [strtolower($email)]);
+    }
+
+    /** Pays a fake Stripe session and returns the signed checkout.session.completed webhook. */
+    protected function paySession(string $sessionId, ?int $amountOverride = null, string $pi = ''): array
+    {
+        $s = $this->stripeState()['sessions'][$sessionId];
+        $s['status'] = 'complete';
+        $s['payment_status'] = 'paid';
+        $s['payment_intent'] = $pi !== '' ? $pi : 'pi_' . substr($sessionId, 3);
+        if ($amountOverride !== null) {
+            $s['amount_total'] = $amountOverride;
+        }
+        $this->setStripeSession($sessionId, $s);
+        return $this->signedWebhook(['id' => 'evt_' . bin2hex(random_bytes(6)), 'type' => 'checkout.session.completed', 'livemode' => false, 'data' => ['object' => $s]]);
+    }
+
+    protected function webhook(array $signed): array
+    {
+        return $this->client()->raw('POST', '/api/stripe/webhook', $signed[0], ['Stripe-Signature' => $signed[1]]);
+    }
+
+    protected function lastSessionId(): string
+    {
+        $s = $this->stripeState()['sessions'];
+        return (string) array_key_last($s);
+    }
+
+    protected function failNextStripeCall(): void
+    {
+        $s = $this->stripeState();
+        $s['fail_next'] = true;
+        file_put_contents(self::$env['stripeState'], json_encode($s));
+    }
+
+    /** @return list<string> kinds, optionally filtered by recipient */
+    protected function emailKinds(?string $to = null): array
+    {
+        $rows = static::$app->db->all('SELECT kind, to_email FROM email_outbox ORDER BY id');
+        return array_values(array_map(static fn ($r) => $r['kind'], array_filter($rows, static fn ($r) => $to === null || strtolower($r['to_email']) === strtolower($to))));
     }
 
     protected function stripeState(): array
@@ -164,6 +230,16 @@ abstract class IntegrationTestCase extends TestCase
     protected function outbox(): array
     {
         return static::$app->db->all('SELECT * FROM email_outbox ORDER BY id');
+    }
+
+    /** Next date (local) on the given ISO weekday at least $minDays ahead. */
+    protected static function nextWeekday(int $isoDow, int $minDays = 5): string
+    {
+        $d = new \DateTimeImmutable("+{$minDays} days", new \DateTimeZone('America/New_York'));
+        while ((int) $d->format('N') !== $isoDow) {
+            $d = $d->modify('+1 day');
+        }
+        return $d->format('Y-m-d');
     }
 
     protected function signedWebhook(array $event, string $secret = 'whsec_test_secret', ?int $t = null): array

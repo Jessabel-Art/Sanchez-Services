@@ -33,9 +33,17 @@ final class HttpClient
         return $r;
     }
 
-    public function fn(string $name, array $data): array
+    public function get(string $path): array
     {
-        return $this->post('/api/fn/' . $name, ['data' => $data]);
+        return $this->request('GET', $path);
+    }
+
+    public function send(string $method, string $path, array $body = []): array
+    {
+        if ($this->csrf === null) {
+            $this->session();
+        }
+        return $this->request($method, $path, json_encode($body ?: new \stdClass()), ['X-CSRF-Token' => (string) $this->csrf]);
     }
 
     public function raw(string $method, string $path, string $body, array $headers = []): array

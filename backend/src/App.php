@@ -5,21 +5,21 @@ namespace SanchezServices;
 
 use SanchezServices\Auth\AuthService;
 use SanchezServices\Auth\UserRepository;
-use SanchezServices\Domain\BlackoutDates;
-use SanchezServices\Domain\BookingEvents;
-use SanchezServices\Domain\Bookings;
+use SanchezServices\Domain\BookingRepo;
+use SanchezServices\Domain\BookingService;
+use SanchezServices\Domain\Checkout;
+use SanchezServices\Domain\Ledger;
+use SanchezServices\Domain\Notifier;
 use SanchezServices\Domain\Outbox;
-use SanchezServices\Domain\Payments;
+use SanchezServices\Domain\Schedule;
 use SanchezServices\Infra\Logger;
 use SanchezServices\Infra\Mailer;
 use SanchezServices\Infra\StripeClient;
 use SanchezServices\Jobs\Jobs;
 use SanchezServices\Security\RateLimiter;
 use SanchezServices\Security\SessionStore;
-use SanchezServices\Store\DocumentStore;
-use SanchezServices\Store\Rules;
 
-/** Service container (constructed once per request / CLI run). */
+/** Service container (one per request / CLI run). */
 final class App
 {
     public readonly Clock $clock;
@@ -29,13 +29,14 @@ final class App
     public readonly RateLimiter $limiter;
     public readonly UserRepository $users;
     public readonly Outbox $outbox;
+    public readonly Notifier $notifier;
     public readonly AuthService $auth;
-    public readonly DocumentStore $store;
-    public readonly Rules $rules;
-    public readonly BookingEvents $events;
-    public readonly Bookings $bookings;
+    public readonly Schedule $schedule;
+    public readonly BookingRepo $repo;
     public readonly StripeClient $stripe;
-    public readonly Payments $payments;
+    public readonly Ledger $ledger;
+    public readonly BookingService $bookings;
+    public readonly Checkout $checkout;
     public readonly Jobs $jobs;
 
     public function __construct(public readonly Config $config, ?Db $db = null, ?StripeClient $stripe = null, ?Mailer $mailer = null, ?Clock $clock = null)
@@ -47,14 +48,15 @@ final class App
         $this->session = new SessionStore($this->db, $config);
         $this->limiter = new RateLimiter($this->db, $this->clock, max(0.01, $config->float('security.rate_limit_multiplier', 1.0)));
         $this->users = new UserRepository($this->db, $this->clock);
-        $this->outbox = new Outbox($this->db, $this->clock, $mailer ?? new Mailer($config), $this->log);
-        $this->auth = new AuthService($this->db, $this->clock, $config, $this->users, $this->session, $this->limiter, $this->outbox);
-        $this->store = new DocumentStore($this->db, $this->clock);
-        $this->rules = new Rules($this->db, $this->store, $config);
-        $this->events = new BookingEvents($this->clock, $config, $this->outbox, $this->log);
-        $this->bookings = new Bookings($this->db, $this->clock, $config, $this->store, $this->events, new BlackoutDates($this->clock));
+        $this->outbox = new Outbox($this->db, $this->clock, $mailer ?? new Mailer($config), $this->log, $config->string('business.email'));
+        $this->notifier = new Notifier($this->db, $this->clock, $config, $this->outbox);
+        $this->auth = new AuthService($this->db, $this->clock, $config, $this->users, $this->session, $this->limiter, $this->notifier);
+        $this->schedule = new Schedule($this->db, $this->clock, $config);
+        $this->repo = new BookingRepo($this->db, $this->clock, $config);
         $this->stripe = $stripe ?? new StripeClient($config);
-        $this->payments = new Payments($this->db, $this->clock, $config, $this->bookings, $this->stripe, $this->log);
+        $this->ledger = new Ledger($this->db, $this->clock, $this->repo, $this->notifier, $this->stripe);
+        $this->bookings = new BookingService($this->db, $this->clock, $config, $this->repo, $this->schedule, $this->ledger, $this->notifier);
+        $this->checkout = new Checkout($this->db, $this->clock, $config, $this->repo, $this->ledger, $this->bookings, $this->stripe, $this->log);
         $this->jobs = new Jobs($this);
     }
 }

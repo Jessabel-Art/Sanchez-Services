@@ -4,14 +4,9 @@ declare(strict_types=1);
 namespace SanchezServices\Tests\Unit;
 
 use PHPUnit\Framework\TestCase;
-use SanchezServices\Clock;
 use SanchezServices\Domain\BlackoutDates;
-use SanchezServices\Domain\BookingEvents;
-use SanchezServices\Domain\PaymentAmounts;
 use SanchezServices\Domain\PaymentMath;
 use SanchezServices\Domain\Pricing;
-use SanchezServices\Domain\Slots;
-use SanchezServices\Store\Doc;
 
 /**
  * Golden tests: outputs recorded from the current JavaScript code
@@ -58,72 +53,10 @@ final class JsParityTest extends TestCase
         }
     }
 
-    public function testPaymentAmountsAndStatus(): void
+    public function testDateKeyArithmetic(): void
     {
-        foreach (self::$f['amounts'] as $c) {
-            $a = PaymentAmounts::fromBooking($c['booking']);
-            self::assertNumericEquals($c['amounts'], $a, 'amounts ' . json_encode($c['booking']));
-            self::assertSame($c['status'], PaymentAmounts::normalizeStatus($a, $c['booking']), 'status ' . json_encode($c['booking']));
-        }
-    }
-
-    public function testBookingEmail(): void
-    {
-        foreach (self::$f['emails'] as $c) {
-            self::assertSame($c['email'], PaymentAmounts::bookingEmail($c['booking']), json_encode($c['booking']));
-        }
-    }
-
-    public function testBuildPaymentPatch(): void
-    {
-        foreach (self::$f['patchCases'] as $i => $c) {
-            $error = null;
-            $out = null;
-            try {
-                $out = PaymentAmounts::buildPaymentPatch($c['booking'], $c['mode'], 'pi_same', $c['metadata']);
-            } catch (\DomainException $e) {
-                $error = $e->getMessage();
-            }
-            self::assertSame($c['error'], $error, "patch case $i error");
-            if ($c['output'] === null) {
-                self::assertNull($out, "patch case $i");
-                continue;
-            }
-            ksort($c['output']);
-            ksort($out);
-            self::assertNumericEquals($c['output'], $out, "patch case $i");
-        }
-    }
-
-    public function testNearestSlotLabel(): void
-    {
-        $clock = new Clock('America/New_York');
-        foreach (self::$f['slotCases'] as $c) {
-            self::assertSame($c['label'], Slots::nearestLabel($clock, Doc::toDate($c['iso']), $c['explicit']), $c['iso']);
-        }
-    }
-
-    public function testBlackoutDateKeys(): void
-    {
-        $bd = new BlackoutDates(new Clock('America/New_York'));
-        foreach (self::$f['blocked'] as $c) {
-            self::assertSame($c['blocked'], BlackoutDates::isFullDayDateBlocked($c['blackout'], $c['dateKey']), json_encode($c));
-        }
-        foreach (self::$f['overlaps'] as $c) {
-            self::assertSame($c['overlaps'], $bd->fullDayOverlapsRange($c['blackout'], Doc::toDate($c['start']), Doc::toDate($c['end'])), json_encode($c));
-        }
         foreach (self::$f['addDays'] as $c) {
             self::assertSame($c['out'], BlackoutDates::addDays($c['key'], $c['n']), json_encode($c));
-        }
-    }
-
-    public function testReminderNotesAndAddresses(): void
-    {
-        foreach (self::$f['reminderNotes'] as $c) {
-            self::assertSame($c['note'], BookingEvents::reminderPaymentNote($c['booking']), json_encode($c['booking']));
-        }
-        foreach (self::$f['addresses'] as $c) {
-            self::assertSame($c['out'], BookingEvents::formatAddress($c['booking']), json_encode($c['booking']));
         }
     }
 }

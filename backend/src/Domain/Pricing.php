@@ -69,7 +69,8 @@ final class Pricing
     }
 
     /** @return array<string,mixed> */
-    public static function calculate(array $b, float $requiredDeposit): array
+    /** @param array<string,float> $promoCodes code => fraction off (e.g. ['CLEAN10' => 0.10]) */
+    public static function calculate(array $b, float $requiredDeposit, array $promoCodes = ['CLEAN10' => 0.10]): array
     {
         $serviceSlug = self::normalizeServiceSlug($b['serviceSlug'] ?? $b['service'] ?? $b['serviceId'] ?? null);
         $service = self::SERVICE_PRICING[$serviceSlug];
@@ -112,7 +113,13 @@ final class Pricing
         $frequencyDiscount = $service['recurringDiscountEligible'] ? $conditionAdjustedTotal * self::FREQUENCY_DISCOUNTS[$frequency] : 0;
         $afterFrequency = $conditionAdjustedTotal - $frequencyDiscount;
         $promoCode = strtoupper(trim((string) ($b['promoCode'] ?? '')));
-        $promoDiscount = $promoCode === 'CLEAN10' ? $afterFrequency * 0.1 : 0;
+        $promoRate = 0;
+        foreach ($promoCodes as $code => $rate) {
+            if (strtoupper((string) $code) === $promoCode && $promoCode !== '') {
+                $promoRate = (float) $rate;
+            }
+        }
+        $promoDiscount = $promoRate > 0 ? $afterFrequency * $promoRate : 0;
         $totalPrice = PaymentMath::toFixed2(max(0, $afterFrequency - $promoDiscount));
 
         return [
@@ -140,5 +147,71 @@ final class Pricing
                 'durationHours' => PaymentMath::jsRound($durationHours * 2) / 2,
             ],
         ];
+    }
+
+    /**
+     * Invoice line items derived from a calculate() result + the inputs. Amounts sum to the total.
+     * @return list<array{label:string,detail:string,amount:float}>
+     */
+    public static function lineItems(array $input, array $priced): array
+    {
+        $e = $priced['estimate'];
+        $items = [];
+        $service = self::SERVICE_PRICING[$priced['serviceSlug']];
+        if ($e['base'] > 0) {
+            $items[] = ['label' => $priced['serviceName'], 'detail' => 'Base service', 'amount' => round((float) $e['base'], 2)];
+        }
+        if ($e['sizeCost'] > 0) {
+            if (isset($service['sqftRate'])) {
+                $sq = (int) max(0, (float) self::jsOr($input['sqft'] ?? null, $input['squareFeet'] ?? null, 0));
+                $items[] = ['label' => $priced['serviceSlug'] === 'office-cleaning' && $e['base'] == 0 ? $priced['serviceName'] : 'Space size', 'detail' => number_format($sq) . ' sq ft', 'amount' => round((float) $e['sizeCost'], 2)];
+            } else {
+                $bd = (float) ($input['bedrooms'] ?? 0);
+                $ba = (float) ($input['bathrooms'] ?? 0);
+                $items[] = ['label' => 'Home size', 'detail' => rtrim(rtrim(number_format($bd, 1), '0'), '.') . ' bed / ' . rtrim(rtrim(number_format($ba, 1), '0'), '.') . ' bath', 'amount' => round((float) $e['sizeCost'], 2)];
+            }
+        }
+        if ($e['petsCost'] > 0) {
+            $items[] = ['label' => 'Pets on site', 'detail' => '', 'amount' => round((float) $e['petsCost'], 2)];
+        }
+        foreach ($priced['addons'] as $id) {
+            $a = self::ADD_ON_PRICING[$id];
+            $items[] = ['label' => $a['label'], 'detail' => 'Add-on', 'amount' => (float) $a['price']];
+        }
+        if (abs((float) $e['conditionCost']) >= 0.005) {
+            $c = self::normalizeCondition($input['condition'] ?? null);
+            $items[] = ['label' => 'Condition adjustment', 'detail' => ucfirst($c), 'amount' => round((float) $e['conditionCost'], 2)];
+        }
+        if ($e['discount'] > 0) {
+            $items[] = ['label' => 'Recurring service discount', 'detail' => ucfirst((string) $priced['frequency']), 'amount' => -round((float) $e['discount'], 2)];
+        }
+        if ($e['promoDiscount'] > 0) {
+            $items[] = ['label' => 'Promo code', 'detail' => strtoupper(trim((string) ($input['promoCode'] ?? ''))), 'amount' => -round((float) $e['promoDiscount'], 2)];
+        }
+        // Rounding residue goes on the last line so the items always sum to the charged total.
+        $sum = array_sum(array_column($items, 'amount'));
+        $diff = round($priced['totalPrice'] - $sum, 2);
+        if ($items && abs($diff) >= 0.005) {
+            $items[count($items) - 1]['amount'] = round($items[count($items) - 1]['amount'] + $diff, 2);
+        }
+        return $items;
+    }
+
+    /** Public catalog (for the booking form; prices are always recomputed on the server). */
+    public static function catalog(): array
+    {
+        $services = [];
+        foreach (self::SERVICE_PRICING as $slug => $s) {
+            $services[] = ['slug' => $slug, 'name' => $s['name'], 'recurringDiscountEligible' => $s['recurringDiscountEligible'], 'pricedBySqft' => isset($s['sqftRate'])];
+        }
+        $addons = [];
+        foreach (self::ADD_ON_PRICING as $id => $a) {
+            $addons[] = ['id' => $id, 'label' => $a['label'], 'price' => $a['price'], 'durationHours' => $a['durationHours']];
+        }
+        $freq = [];
+        foreach (self::FREQUENCY_DISCOUNTS as $id => $d) {
+            $freq[] = ['id' => $id, 'name' => ucwords(str_replace('-', ' ', $id)), 'discount' => $d];
+        }
+        return ['services' => $services, 'addons' => $addons, 'frequencies' => $freq];
     }
 }

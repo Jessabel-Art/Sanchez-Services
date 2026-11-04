@@ -33,6 +33,22 @@ class StripeClient
         return $this->request('POST', '/v1/checkout/sessions', $params, $idempotencyKey);
     }
 
+    public function expireCheckoutSession(string $id): array
+    {
+        return $this->request('POST', '/v1/checkout/sessions/' . rawurlencode($id) . '/expire', []);
+    }
+
+    /** @param array<string,mixed> $params */
+    public function createRefund(array $params, ?string $idempotencyKey = null): array
+    {
+        return $this->request('POST', '/v1/refunds', $params, $idempotencyKey);
+    }
+
+    public function retrieveEvent(string $id): array
+    {
+        return $this->request('GET', '/v1/events/' . rawurlencode($id), []);
+    }
+
     /** @param list<string> $expand */
     public function retrieveCheckoutSession(string $id, array $expand = []): array
     {

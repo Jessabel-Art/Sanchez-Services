@@ -59,17 +59,36 @@ final class Config
                 'debug' => false,
             ],
             'business' => [
+                'name' => 'Sanchez Services',
+                'email' => 'sanchezservices24@yahoo.com',   // public contact / reply-to
+                'phone' => '',
+                'website' => 'https://sanchezproservices.com',
                 'timezone' => 'America/New_York',
-                'slot_capacity' => 1,
+                // Customer-facing start times per ISO weekday (1 = Mon … 7 = Sun). Empty = closed.
+                'slots' => [
+                    1 => ['09:00', '11:00', '13:00', '15:00'],
+                    2 => ['09:00', '11:00', '13:00', '15:00'],
+                    3 => ['09:00', '11:00', '13:00', '15:00'],
+                    4 => ['09:00', '11:00', '13:00', '15:00'],
+                    5 => ['09:00', '11:00', '13:00', '15:00'],
+                    6 => ['09:00', '11:00', '13:00'],
+                    7 => [],
+                ],
+                'admin_day_start' => '07:00',            // admins may schedule any time in this window
+                'admin_day_end' => '20:00',
+                'slot_capacity' => 1,                    // simultaneous appointments
                 'daily_capacity' => 6,
+                'booking_horizon_days' => 120,
+                'min_notice_hours' => 12,                // earliest online booking from now
+                'client_change_cutoff_hours' => 24,      // Terms: 24h notice to reschedule/cancel online
                 'required_deposit_amount' => 50,
-                'pending_payment_ttl_minutes' => 30,
-                'pending_payment_sweep_batch' => 200,
-                'webhook_recovery_min_age_minutes' => 10,
-                'webhook_recovery_batch' => 50,
+                'hold_minutes' => 30,                    // unpaid online booking keeps its slot this long
+                'pass_card_fee_to_customer' => true,     // 2.9% + $0.30 line item at checkout
+                'promo_codes' => ['CLEAN10' => 0.10],
+                'auto_complete_after_hours' => 2,
+                'reminder_hours' => [48, 24],
                 'admin_notification_emails' => [],
-                'admin_emails' => [],              // server-side allowlist (mirrors ADMIN_EMAILS)
-                'admin_uids' => [],                // server-side allowlist (mirrors ADMIN_UIDS)
+                'invoice_prefix' => 'SS',
             ],
             'db' => [
                 'dsn' => '',
@@ -110,9 +129,7 @@ final class Config
                 'lockout_seconds' => 900,
                 'reset_token_ttl_minutes' => 60,
                 'min_password_length' => 6,        // Firebase Auth minimum is 6
-                // Preserves current behavior (Firebase rules match on token email, verified or not).
-                // OPTIONAL CHANGE: set true to require a verified email for email-matched booking access.
-                'require_verified_email_for_email_match' => false,
+                'verify_token_ttl_hours' => 72,
             ],
             'logging' => [
                 'path' => '',                      // directory for app-YYYY-MM-DD.log

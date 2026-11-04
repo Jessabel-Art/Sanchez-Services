@@ -6,7 +6,7 @@ namespace SanchezServices\Auth;
 use SanchezServices\Clock;
 use SanchezServices\Config;
 use SanchezServices\Db;
-use SanchezServices\Domain\Outbox;
+use SanchezServices\Domain\Notifier;
 use SanchezServices\Http\HttpError;
 use SanchezServices\Security\RateLimiter;
 use SanchezServices\Security\SessionStore;
@@ -14,8 +14,8 @@ use SanchezServices\Security\SessionStore;
 /**
  * Replaces Firebase Auth (email/password). Error codes mirror Firebase's `auth/*` codes.
  *
- * NOT included (needs owner decision): verifying imported Firebase password hashes.
- * Imported users without a native password_hash must use "Forgot password".
+ * Imported Firebase accounts have no native password until they use "Forgot password"
+ * (verifying Firebase scrypt hashes on login is a pending owner decision).
  */
 final class AuthService
 {
@@ -29,7 +29,7 @@ final class AuthService
         private UserRepository $users,
         private SessionStore $session,
         private RateLimiter $limiter,
-        private Outbox $outbox,
+        private Notifier $notifier,
     ) {
     }
 
@@ -60,7 +60,7 @@ final class AuthService
 
     private static function authVersion(array $row): string
     {
-        return substr(hash('sha256', (string) ($row['password_hash'] ?? '') . '|' . $row['email_lower']), 0, 16);
+        return substr(hash('sha256', (string) ($row['password_hash'] ?? '') . '|' . $row['email_lower'] . '|' . $row['role'] . '|' . $row['is_active']), 0, 16);
     }
 
     private function signIn(array $row): AuthUser
@@ -95,7 +95,7 @@ final class AuthService
         return strlen($email) <= 254 && filter_var($email, FILTER_VALIDATE_EMAIL) !== false;
     }
 
-    public function register(string $email, string $password, string $ip): AuthUser
+    public function register(string $email, string $password, ?string $name, string $ip): AuthUser
     {
         $email = trim($email);
         $this->limiter->hit('register:ip:' . $ip, 10, 3600);
@@ -108,13 +108,15 @@ final class AuthService
         if (strlen($password) > 1024) {
             throw new HttpError('auth/weak-password', 'Password is too long.');
         }
-        return $this->db->transaction(function () use ($email, $password) {
+        $u = $this->db->transaction(function () use ($email, $password, $name) {
             if ($this->users->rowByEmail($email)) {
-                throw new HttpError('auth/email-already-in-use', 'The email address is already in use by another account.');
+                throw new HttpError('auth/email-already-in-use', 'An account with this email already exists. Sign in or reset your password.');
             }
-            $u = $this->users->create($email, Passwords::hash($password));
+            $u = $this->users->create($email, Passwords::hash($password), $name !== null ? mb_substr(trim($name), 0, 200) : null);
+            $this->sendVerification($u);
             return $this->signIn((array) $this->users->rowById($u->id));
         });
+        return $u;
     }
 
     public function login(string $email, string $password, string $ip): AuthUser
@@ -176,27 +178,9 @@ final class AuthService
         if (!$row || (int) $row['is_active'] !== 1) {
             return;
         }
-        $token = rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
-        $now = $this->clock->now();
-        $this->db->insert('password_resets', [
-            'user_id' => (int) $row['id'],
-            'token_hash' => hash('sha256', $token),
-            'expires_at' => Clock::toSql($now->modify('+' . $this->config->int('auth.reset_token_ttl_minutes', 60) . ' minutes')),
-            'created_at' => Clock::toSql($now),
-        ]);
-        $link = rtrim($this->config->string('app.url'), '/') . '/auth/reset?token=' . rawurlencode($token);
         $minutes = $this->config->int('auth.reset_token_ttl_minutes', 60);
-        $this->outbox->enqueue([
-            'to' => [(string) $row['email']],
-            'message' => [
-                'subject' => 'Reset your Sanchez Services password',
-                'html' => '<p>Hello,</p><p>Follow this link to reset your Sanchez Services password for your ' . htmlspecialchars((string) $row['email']) . ' account.</p>'
-                    . '<p><a href="' . htmlspecialchars($link) . '">' . htmlspecialchars($link) . '</a></p>'
-                    . "<p>This link expires in {$minutes} minutes. If you didn’t ask to reset your password, you can ignore this email.</p><p>Thanks,<br/>Sanchez Services</p>",
-                'text' => "Hello,\n\nFollow this link to reset your Sanchez Services password for your {$row['email']} account.\n\n{$link}\n\nThis link expires in {$minutes} minutes. If you didn’t ask to reset your password, you can ignore this email.\n\nThanks,\nSanchez Services",
-            ],
-            'meta' => ['kind' => 'password_reset'],
-        ]);
+        $token = $this->issueToken((int) $row['id'], 'password_reset', $minutes, null);
+        $this->notifier->passwordReset((string) $row['email'], rtrim($this->config->string('app.url'), '/') . '/auth/reset?token=' . rawurlencode($token), $minutes);
     }
 
     public function resetPassword(string $token, string $password, string $ip): AuthUser
@@ -206,12 +190,8 @@ final class AuthService
             throw new HttpError('auth/weak-password', 'Password should be at least 6 characters.');
         }
         return $this->db->transaction(function () use ($token, $password) {
-            $row = $this->db->one('SELECT * FROM password_resets WHERE token_hash = ? FOR UPDATE', [hash('sha256', $token)]);
+            $row = $this->consumeToken($token, 'password_reset');
             $nowSql = (string) Clock::toSql($this->clock->now());
-            if (!$row || $row['used_at'] !== null || (string) $row['expires_at'] < $nowSql) {
-                throw new HttpError('auth/invalid-action-code', 'This password reset link is invalid or has expired.');
-            }
-            $this->db->run('UPDATE password_resets SET used_at = ? WHERE user_id = ? AND used_at IS NULL', [$nowSql, (int) $row['user_id']]);
             $this->users->update((int) $row['user_id'], [
                 'password_hash' => Passwords::hash($password),
                 'legacy_password_hash' => null,
@@ -247,6 +227,7 @@ final class AuthService
             $row = (array) $this->users->rowById($u->id);
             $this->session->set('auth_version', self::authVersion($row));
             $this->current = AuthUser::fromRow($row);
+            $this->sendVerification($this->current);
             return $this->current;
         });
     }
@@ -265,11 +246,74 @@ final class AuthService
         $this->signIn((array) $this->users->rowById($u->id));
     }
 
-    /** updateProfile(user, {displayName}) */
-    public function updateProfile(?string $displayName): AuthUser
+    public function refresh(): ?AuthUser
+    {
+        if ($this->current) {
+            $this->current = $this->users->findById($this->current->id);
+        }
+        return $this->current;
+    }
+
+    public function sendVerification(AuthUser $u): void
+    {
+        $token = $this->issueToken($u->id, 'email_verify', $this->config->int('auth.verify_token_ttl_hours', 72) * 60, $u->emailLower);
+        $this->notifier->verifyEmail($u->email, rtrim($this->config->string('app.url'), '/') . '/auth/verify?token=' . rawurlencode($token));
+    }
+
+    public function resendVerification(string $ip): void
     {
         $u = $this->requireUser();
-        $this->users->update($u->id, ['display_name' => $displayName !== null ? mb_substr(trim($displayName), 0, 200) : null]);
+        if ($u->emailVerified) {
+            return;
+        }
+        $this->limiter->hit('verify:user:' . $u->id, 5, 3600);
+        $this->sendVerification($u);
+    }
+
+    /** Marks the email verified (token must match the email it was issued for). */
+    public function verifyEmail(string $token): AuthUser
+    {
+        return $this->db->transaction(function () use ($token) {
+            $row = $this->consumeToken($token, 'email_verify');
+            $user = (array) $this->users->rowById((int) $row['user_id']);
+            if (($row['email'] ?? null) !== $user['email_lower']) {
+                throw new HttpError('auth/invalid-action-code', 'This link was issued for a different email address.');
+            }
+            $this->users->update((int) $user['id'], ['email_verified_at' => Clock::toSql($this->clock->now())]);
+            $fresh = (array) $this->users->rowById((int) $user['id']);
+            if ($this->current && $this->current->id === (int) $user['id']) {
+                $this->current = AuthUser::fromRow($fresh);
+            }
+            return AuthUser::fromRow($fresh);
+        });
+    }
+
+    private function issueToken(int $userId, string $purpose, int $ttlMinutes, ?string $email): string
+    {
+        $token = rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
+        $now = $this->clock->now();
+        $this->db->insert('auth_tokens', [
+            'user_id' => $userId, 'purpose' => $purpose, 'token_hash' => hash('sha256', $token), 'email' => $email,
+            'expires_at' => Clock::toSql($now->modify("+{$ttlMinutes} minutes")), 'created_at' => Clock::toSql($now),
+        ]);
+        return $token;
+    }
+
+    private function consumeToken(string $token, string $purpose): array
+    {
+        $row = $this->db->one('SELECT * FROM auth_tokens WHERE token_hash = ? AND purpose = ? FOR UPDATE', [hash('sha256', $token), $purpose]);
+        $nowSql = (string) Clock::toSql($this->clock->now());
+        if (!$row || $row['used_at'] !== null || (string) $row['expires_at'] < $nowSql) {
+            throw new HttpError('auth/invalid-action-code', $purpose === 'password_reset' ? 'This password reset link is invalid or has expired.' : 'This confirmation link is invalid or has expired.');
+        }
+        $this->db->run('UPDATE auth_tokens SET used_at = ? WHERE user_id = ? AND purpose = ? AND used_at IS NULL', [$nowSql, (int) $row['user_id'], $purpose]);
+        return $row;
+    }
+
+    public function updateContact(?string $name, ?string $phone): AuthUser
+    {
+        $u = $this->requireUser();
+        $this->users->update($u->id, ['name' => $name, 'phone' => $phone]);
         $this->current = AuthUser::fromRow((array) $this->users->rowById($u->id));
         return $this->current;
     }
