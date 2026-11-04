@@ -34,6 +34,8 @@ Run `php backend/deploy/hostinger/host-check.php` over SSH: it prints PHP versio
 
 ## 2. Staging rehearsal (before touching the live site)
 
+Follow the step-by-step version in `docs/STAGING_GUIDE.md`. Summary:
+
 1. Create a staging subdomain (e.g. `staging.sanchezproservices.com`) and a separate staging database.
 2. `backend/deploy/build-release.sh /home/<user>/ss-app-staging release-staging` locally; upload
    `release-staging/ss-app/` outside the web root and `release-staging/public_html/` to the staging document root.
