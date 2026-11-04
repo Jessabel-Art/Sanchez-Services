@@ -39,6 +39,8 @@ final class PublicController
                     ? \SanchezServices\Domain\PaymentMath::grossFromNet($c->float('business.required_deposit_amount', 50))
                     : ['estimatedFee' => 0.0, 'grossAmount' => $c->float('business.required_deposit_amount', 50)],
                 'slots' => $c->get('business.slots'),
+                'returningClientDepositAmount' => $c->get('business.returning_client_deposit_amount') === null ? null : $c->float('business.returning_client_deposit_amount'),
+                'depositRefundPolicy' => in_array($c->string('business.deposit_refund_policy'), ['non_refundable', 'refundable_before_cutoff'], true) ? $c->string('business.deposit_refund_policy') : 'non_refundable',
             ],
         ]);
     }

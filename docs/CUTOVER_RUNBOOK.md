@@ -5,17 +5,19 @@ need the owner's explicit approval. Firebase stays fully intact until §5 is com
 
 ## 0. Decisions needed from the owner
 
-| # | Decision | Default in the code |
-|---|---|---|
-| D1 | Keep customers' existing Firebase passwords (needs the project's password-hash parameters, stored only in the server config) **or** ask everyone to set a new password via "Forgot password"? | Reset required (`auth.firebase_scrypt` unset) |
-| D2 | Change/cancel cut-off for online changes | 24 h (matches the Terms of Service) |
-| D3 | Minimum notice for new online bookings | 12 h |
-| D4 | Deposit: $50 for every online booking? (The old site said returning clients don't need one, but the old server always charged it.) | $50 for all |
-| D5 | Is the deposit refundable when a client cancels more than 24 h ahead? The booking page says "non-refundable"; the Terms mention a late-cancellation fee. Refunds are always a manual admin action today. | No automatic refund |
-| D6 | Legacy "completed" bookings with no payment recorded in Firestore: treat as paid in full at import (`--assume-completed-paid`) or leave the balance showing? | Leave as due (reported) |
-| D7 | Card refunds return the amount credited to the booking; the card-processing fee the client paid is not refunded. OK? | Fee not refunded |
-| D8 | Accounts that only used Google sign-in (e.g. the owner) set a password via "Forgot password". Google sign-in is not offered on the new site. OK? | Yes |
-| D9 | Which mailbox sends booking emails (e.g. `bookings@sanchezproservices.com` on Hostinger) and who receives admin alerts? | Admins/owners in the database |
+| # | Decision | Default (unchanged until you decide) | Where it is set |
+|---|---|---|---|
+| D1 | Keep customers' existing Firebase passwords **or** everyone sets a new one via "Forgot password" | Reset required | `auth.firebase_scrypt` (+ import flag `--with-legacy-password-hashes`) |
+| D2 | Online change/cancel cut-off | 24 h (Terms of Service) | `business.client_change_cutoff_hours` |
+| D3 | Minimum notice for new online bookings | 12 h | `business.min_notice_hours` |
+| D4 | Deposit for returning clients (old site said none; old server always charged $50) | $50 for everyone | `business.returning_client_deposit_amount` (null = same, 0 = none) |
+| D5 | Deposit refundable if cancelled before the cut-off? (wording only — refunds are always a manual admin action) | "non-refundable" | `business.deposit_refund_policy` = `non_refundable` / `refundable_before_cutoff` |
+| D6 | Legacy "completed" bookings with no recorded payment | Left as shown in Firestore (balance due) and listed in the import report | import flag `--assume-completed-paid` (off) |
+| D7 | Card refunds return the credited amount; the card fee the client paid is not refunded | Fee not refunded | admin chooses the refund amount per payment |
+| D8 | Google sign-in on the new site | Off (accounts can still reset a password) | `auth.google.client_id` / `client_secret` (Google Cloud OAuth client) |
+| D9 | Sending mailbox and who receives admin alerts | Admins/owners in the database | `mail.*`, `business.admin_notification_emails` |
+
+The Terms of Service page text is not changed automatically by any of these settings.
 
 ## 1. Hostinger information needed (no secrets in chat — enter them directly on the server)
 

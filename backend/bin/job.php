@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 // Cron entry point.
 //   php bin/job.php due              (run every job whose interval elapsed — schedule every 5 minutes)
-//   php bin/job.php expire-pending | recover-payments | send-reminders | send-outbox | purge
+//   php bin/job.php expire-holds | reconcile-payments | send-email | reminders | auto-complete | purge
 require dirname(__DIR__) . '/bootstrap.php';
 
 $app = new SanchezServices\App(SanchezServices\Config::load());

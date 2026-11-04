@@ -442,9 +442,12 @@ final class AdminController
                 'queued' => (int) $db->scalar("SELECT COUNT(*) FROM email_outbox WHERE status IN ('queued','sending')"),
                 'failed' => array_map(static fn ($e) => ['id' => (int) $e['id'], 'kind' => $e['kind'], 'to' => $e['to_email'], 'subject' => $e['subject'], 'attempts' => (int) $e['attempts'], 'error' => $e['last_error'], 'createdAt' => BookingRepo::iso($e['created_at'])], $db->all("SELECT * FROM email_outbox WHERE status = 'failed' ORDER BY id DESC LIMIT 50")),
                 'sentLast7Days' => (int) $db->scalar('SELECT COUNT(*) FROM email_outbox WHERE status = \'sent\' AND sent_at >= ?', [Clock::toSql($this->app->clock->now()->modify('-7 days'))]),
+                'suppressed' => (int) $db->scalar("SELECT COUNT(*) FROM email_outbox WHERE status = 'suppressed'"),
+                'allowlistActive' => !$this->app->outbox->allowed('nobody@invalid.invalid'),
             ],
             'attention' => array_map(fn ($b) => $this->app->repo->toApi($b, true), $db->all('SELECT * FROM bookings WHERE needs_attention IS NOT NULL ORDER BY updated_at DESC LIMIT 50')),
-            'stripe' => ['configured' => $this->app->checkout->configured(), 'failedEvents' => (int) $db->scalar("SELECT COUNT(*) FROM stripe_events WHERE status = 'failed'")],
+            'environment' => $this->app->config->string('app.env'),
+            'stripe' => ['configured' => $this->app->checkout->configured(), 'mode' => str_starts_with($this->app->config->string('stripe.secret_key'), 'sk_live_') || str_starts_with($this->app->config->string('stripe.secret_key'), 'rk_live_') ? 'live' : 'test', 'failedEvents' => (int) $db->scalar("SELECT COUNT(*) FROM stripe_events WHERE status = 'failed'")],
         ]);
     }
 

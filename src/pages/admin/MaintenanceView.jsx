@@ -61,6 +61,14 @@ export default function MaintenanceView() {
         <p className="text-xs md:text-sm text-plum/70">Background jobs, email delivery and anything that needs a person to look at it.</p>
       </div>
       {q.error && <p className="text-sm text-rose-700" role="alert">{q.error.message}</p>}
+      {s && s.environment !== "production" && (
+        <div className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900" role="status">
+          <strong>{s.environment.toUpperCase()} environment.</strong> Stripe is in {s.stripe.mode} mode.
+          {s.email.allowlistActive
+            ? ` Email only goes to the staging allowlist — ${s.email.suppressed} message(s) to other recipients were held, not sent.`
+            : " Warning: no email allowlist is active."}
+        </div>
+      )}
 
       <Card className="border-[#F1D8E8] rounded-2xl">
         <CardHeader>

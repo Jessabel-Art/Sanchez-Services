@@ -5,6 +5,7 @@ namespace SanchezServices\Controllers;
 
 use SanchezServices\App;
 use SanchezServices\Auth\AuthUser;
+use SanchezServices\Http\HttpError;
 use SanchezServices\Http\Input;
 use SanchezServices\Http\Request;
 use SanchezServices\Http\Response;
@@ -21,7 +22,31 @@ final class AuthController
             'user' => $u?->toApi(),
             'csrfToken' => $this->app->auth->csrfToken(),
             'pollIntervalSeconds' => $this->app->config->int('polling.interval_seconds', 30),
+            'googleSignIn' => $this->app->google->enabled(),
         ]);
+    }
+
+    /** GET /api/auth/google/start?next=/portal — redirects to Google (only when enabled in config). */
+    public function googleStart(Request $r): Response
+    {
+        $this->app->limiter->hit('google:ip:' . $r->ip, 30, 600);
+        return new Response(302, '', ['Location' => $this->app->google->start((string) ($r->query['next'] ?? '/portal')), 'Cache-Control' => 'no-store']);
+    }
+
+    /** GET /api/auth/google/callback — Google redirects here; on success the user is signed in and sent back to the site. */
+    public function googleCallback(Request $r): Response
+    {
+        $base = rtrim($this->app->config->string('app.url'), '/');
+        try {
+            if (isset($r->query['error'])) {
+                throw new HttpError('permission-denied', 'Google sign-in was cancelled.');
+            }
+            [$row, $next] = $this->app->google->finish((string) ($r->query['code'] ?? ''), (string) ($r->query['state'] ?? ''));
+            $this->claim($this->app->auth->signIn($row));
+            return new Response(302, '', ['Location' => $base . $next, 'Cache-Control' => 'no-store']);
+        } catch (HttpError $e) {
+            return new Response(302, '', ['Location' => $base . '/auth?error=' . rawurlencode($e->getMessage()), 'Cache-Control' => 'no-store']);
+        }
     }
 
     /** Verified accounts pick up bookings an admin created for their email. */

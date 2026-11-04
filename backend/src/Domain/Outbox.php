@@ -18,7 +18,11 @@ final class Outbox
     /** @var list<int> */
     private array $pending = [];
 
-    public function __construct(private Db $db, private Clock $clock, private Mailer $mailer, private Logger $log, private string $replyTo = '')
+    /**
+     * @param list<string>|null $allowlist null = deliver to anyone (production default). A list = deliver only to these
+     *        addresses or "@domain" entries; everything else is kept as 'suppressed' (staging: empty list = send nothing).
+     */
+    public function __construct(private Db $db, private Clock $clock, private Mailer $mailer, private Logger $log, private string $replyTo = '', private ?array $allowlist = null)
     {
     }
 
@@ -84,6 +88,10 @@ final class Outbox
             return false;
         }
         $row = $this->db->one('SELECT * FROM email_outbox WHERE id = ?', [$id]);
+        if (!$this->allowed((string) $row['to_email'])) {
+            $this->db->run("UPDATE email_outbox SET status = 'suppressed', last_error = 'recipient not on mail.recipient_allowlist' WHERE id = ?", [$id]);
+            return false;
+        }
         try {
             $this->mailer->send([(string) $row['to_email']], $row['reply_to'], (string) $row['subject'], (string) $row['html'], (string) $row['text_body']);
             $this->db->run("UPDATE email_outbox SET status = 'sent', sent_at = ?, last_error = NULL WHERE id = ?", [Clock::toSql($this->clock->now()), $id]);
@@ -94,5 +102,20 @@ final class Outbox
             $this->log->error('email send failed', ['outboxId' => $id, 'error' => $e->getMessage()]);
             return false;
         }
+    }
+
+    public function allowed(string $email): bool
+    {
+        if ($this->allowlist === null) {
+            return true;
+        }
+        $email = strtolower(trim($email));
+        foreach ($this->allowlist as $entry) {
+            $entry = strtolower(trim((string) $entry));
+            if ($entry !== '' && ($email === $entry || ($entry[0] === '@' && str_ends_with($email, $entry)))) {
+                return true;
+            }
+        }
+        return false;
     }
 }

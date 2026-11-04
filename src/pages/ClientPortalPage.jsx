@@ -1,4 +1,5 @@
 // src/pages/ClientPortalPage.jsx
+import { useBusinessRules, depositPolicySentence } from "@/hooks/useBusinessRules";
 import React, {
   useEffect,
   useId,
@@ -293,6 +294,7 @@ const Modal = ({ open, onClose, title, children, footer }) => {
 /* ============================================================= */
 
 export default function ClientPortalPage() {
+  const rules = useBusinessRules();
   const { toast } = useToast();
   const navigate = useNavigate();
   const {
@@ -1007,7 +1009,7 @@ export default function ClientPortalPage() {
           }
         >
           <p className="text-sm text-plum/80">
-            This cancels your appointment. Deposits are non-refundable per our policy. Are you sure?
+            This cancels your appointment. {depositPolicySentence(rules)} Are you sure?
           </p>
           <Label htmlFor="cancel-reason" className="mt-3 block text-sm">Reason (optional)</Label>
           <Input id="cancel-reason" value={cancelReason} onChange={(e) => setCancelReason(e.target.value)} maxLength={500} className="bg-white mt-1" />

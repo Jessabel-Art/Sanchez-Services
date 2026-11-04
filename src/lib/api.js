@@ -31,9 +31,14 @@ export function onSessionChange(fn) {
   return () => sessionListeners.delete(fn);
 }
 
+let googleSignIn = false;
+/** True when the server has Google sign-in configured (owner decision). */
+export const isGoogleSignInEnabled = () => googleSignIn;
+
 function absorb(payload) {
   if (payload && typeof payload.csrfToken === "string") csrfToken = payload.csrfToken;
   if (payload && Number(payload.pollIntervalSeconds) > 0) pollIntervalMs = Math.max(5000, payload.pollIntervalSeconds * 1000);
+  if (payload && typeof payload.googleSignIn === "boolean") googleSignIn = payload.googleSignIn;
   if (payload && "user" in payload) sessionListeners.forEach((fn) => fn(payload.user));
 }
 

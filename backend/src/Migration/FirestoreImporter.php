@@ -97,6 +97,10 @@ final class FirestoreImporter
             throw new RuntimeException('manifest.json not found in export directory.');
         }
         $manifest = json_decode((string) file_get_contents($manifestPath), true, 512, JSON_THROW_ON_ERROR);
+        foreach ((array) ($manifest['unknownCollections'] ?? []) as $c) {
+            $this->warn('export', (string) $c, 'collection exists in Firestore but was not exported or imported; review it before cutover');
+        }
+        $this->report['source']['exportedAt'] = $manifest['exportedAt'] ?? null;
         foreach ((array) ($manifest['collections'] ?? []) as $key => $meta) {
             $name = $key === 'profiles/*/addresses' ? 'profiles__addresses' : (string) $key;
             if (!preg_match('/^[A-Za-z0-9_]+$/', $name)) {

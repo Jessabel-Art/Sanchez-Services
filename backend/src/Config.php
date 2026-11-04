@@ -82,6 +82,11 @@ final class Config
                 'min_notice_hours' => 12,                // earliest online booking from now
                 'client_change_cutoff_hours' => 24,      // Terms: 24h notice to reschedule/cancel online
                 'required_deposit_amount' => 50,
+                // Owner decision D4: deposit for clients with at least one completed cleaning (null = same as above, 0 = none).
+                'returning_client_deposit_amount' => null,
+                // Owner decision D5 (wording only; refunds are always an admin action):
+                // 'non_refundable' | 'refundable_before_cutoff'
+                'deposit_refund_policy' => 'non_refundable',
                 'hold_minutes' => 30,                    // unpaid online booking keeps its slot this long
                 'pass_card_fee_to_customer' => true,     // 2.9% + $0.30 line item at checkout
                 'promo_codes' => ['CLEAN10' => 0.10],
@@ -119,6 +124,8 @@ final class Config
                 'from_address' => '',
                 'from_name' => 'Sanchez Services',
                 'log_path' => '',
+                // Outside production only these recipients get mail ("owner@x.com" or "@x.com"); others are 'suppressed'.
+                'recipient_allowlist' => null,
             ],
             'jobs' => [
                 'runner_token' => '',              // shared secret for /api/jobs/run (web-cron fallback)
@@ -130,6 +137,8 @@ final class Config
                 'reset_token_ttl_minutes' => 60,
                 'min_password_length' => 6,        // Firebase Auth minimum is 6
                 'verify_token_ttl_hours' => 72,
+                // Optional Google sign-in (owner decision D8): off unless both are set.
+                'google' => ['client_id' => '', 'client_secret' => ''],
             ],
             'logging' => [
                 'path' => '',                      // directory for app-YYYY-MM-DD.log

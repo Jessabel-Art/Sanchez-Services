@@ -82,4 +82,18 @@ final class AccountTest extends IntegrationTestCase
         $left = $c->send('DELETE', '/api/me/addresses/' . $a2[0]['id'])['json']['addresses'];
         $this->assertTrue($left[0]['isDefault'], 'default moves to the remaining address');
     }
+
+    public function testStagingAllowlistHoldsMailForOtherRecipients(): void
+    {
+        // Test config allowlist is ['@example.test']: anyone else's mail is kept as 'suppressed', never sent.
+        $this->registerClient('outsider@customer.test');
+        $this->registerClient('insider@example.test');
+        static::$app->outbox->sendDue();
+        $rows = static::$app->db->all("SELECT to_email, status FROM email_outbox WHERE kind = 'email_verify' ORDER BY id");
+        $by = array_column($rows, 'status', 'to_email');
+        $this->assertSame('suppressed', $by['outsider@customer.test']);
+        $this->assertSame('sent', $by['insider@example.test']);
+        $log = (string) @file_get_contents(self::$env['mailLog']);
+        $this->assertStringNotContainsString('outsider@customer.test', $log);
+    }
 }

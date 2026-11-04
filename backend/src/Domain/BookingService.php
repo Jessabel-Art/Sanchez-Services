@@ -156,6 +156,10 @@ final class BookingService
             return $existing;
         }
         $priced = $this->price($in);
+        $returning = $this->config->get('business.returning_client_deposit_amount');
+        if ($returning !== null && (int) $this->db->scalar("SELECT COUNT(*) FROM bookings WHERE user_id = ? AND status = 'completed'", [$u->id]) > 0) {
+            $priced['pricing']['depositAmount'] = round(min(max(0.0, (float) $returning), (float) $priced['pricing']['totalPrice']), 2);
+        }
         $cols = $this->contactAndAddress($in);
         if (strtolower($cols['contact_email']) !== $u->emailLower) {
             // Bookings belong to the signed-in account; notifications go to its email.

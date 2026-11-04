@@ -16,6 +16,7 @@ import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/components/ui/use-toast';
 import { useAuth } from '@/context/AuthContext';
+import { isGoogleSignInEnabled } from '@/lib/api';
 
 
 export default function AuthPage() {
@@ -30,6 +31,7 @@ export default function AuthPage() {
   const redirectTo = location.state?.from ?? redirectParam ?? '/portal';
 
   const [tab, setTab] = useState('login');
+  const googleEnabled = authReady && isGoogleSignInEnabled();
   const [loading, setLoading] = useState(false);
 
   // login form
@@ -44,6 +46,13 @@ export default function AuthPage() {
   useEffect(() => {
     if (authReady && user) navigate(redirectTo, { replace: true });
   }, [authReady, user, navigate, redirectTo]);
+
+  // Errors handed back by the Google sign-in callback (/auth?error=…)
+  useEffect(() => {
+    const err = new URLSearchParams(location.search).get('error');
+    if (err) toast({ title: 'Sign-in problem', description: err, variant: 'destructive' });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -221,6 +230,20 @@ export default function AuthPage() {
                     {loading ? 'Please wait…' : 'Sign In'}
                   </Button>
                 </CardFooter>
+                {googleEnabled && (
+                  <CardFooter className="pt-0">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="w-full rounded-full border-plum/30 text-plum"
+                      onClick={() => {
+                        window.location.href = `/api/auth/google/start?next=${encodeURIComponent(typeof redirectTo === 'string' ? redirectTo : '/portal')}`;
+                      }}
+                    >
+                      Continue with Google
+                    </Button>
+                  </CardFooter>
+                )}
               </form>
             </Card>
           </TabsContent>

@@ -1,5 +1,6 @@
 // src/components/portal/UpcomingBookings.jsx
 import React, { useState } from "react";
+import { useBusinessRules, depositPolicyPhrase } from "@/hooks/useBusinessRules";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
@@ -106,6 +107,7 @@ export default function UpcomingBookings({
   depositAmount = 50,
   isRepeatClient = false,
 }) {
+  const rules = useBusinessRules();
   const hasBookings = bookings && bookings.length > 0;
   const [confirmCancelId, setConfirmCancelId] = useState(null);
 
@@ -493,7 +495,7 @@ export default function UpcomingBookings({
                 <p>
                   An{" "}
                   <span className="font-semibold">
-                    ${Number(depositAmount).toFixed(0)} non-refundable deposit
+                    ${Number(depositAmount).toFixed(0)} {depositPolicyPhrase(rules)}
                   </span>{" "}
                   is required to secure your first cleaning. Check your Payment
                   &amp; Deposit Info section for details.

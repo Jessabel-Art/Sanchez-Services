@@ -49,6 +49,12 @@ class StripeClient
         return $this->request('GET', '/v1/events/' . rawurlencode($id), []);
     }
 
+    /** Read-only listing used by bin/staging-check.php. */
+    public function listWebhookEndpoints(): array
+    {
+        return $this->request('GET', '/v1/webhook_endpoints?limit=20', []);
+    }
+
     /** @param list<string> $expand */
     public function retrieveCheckoutSession(string $id, array $expand = []): array
     {

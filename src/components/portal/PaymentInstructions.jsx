@@ -1,5 +1,6 @@
 // src/components/portal/PaymentInstructions.jsx
 import React from "react";
+import { useBusinessRules, depositPolicyPhrase, depositPolicySentence } from "@/hooks/useBusinessRules";
 import {
   Card,
   CardContent,
@@ -16,6 +17,7 @@ import {
 import { Button } from "@/components/ui/button";
 
 const PaymentInstructions = ({ paymentInfo, onStripePay }) => {
+  const rules = useBusinessRules();
   const P = paymentInfo || {};
 
   const isRepeatClient = !!P.isRepeatClient;
@@ -62,7 +64,7 @@ const PaymentInstructions = ({ paymentInfo, onStripePay }) => {
               <p className="text-sm text-plum">
                 New clients are booked with a{" "}
                 <strong>
-                  ${depositAmount.toFixed(2)} non-refundable deposit
+                  ${depositAmount.toFixed(2)} {depositPolicyPhrase(rules)}
                 </strong>{" "}
                 to secure the appointment. The deposit is applied to your
                 final balance at the time of service.
@@ -219,7 +221,7 @@ const PaymentInstructions = ({ paymentInfo, onStripePay }) => {
           <div>
             <p>
               {P.notes ||
-                "Deposits are non-refundable but can usually be transferred once to a new date if you reschedule with at least 24 hours’ notice, according to the cancellation policy you agreed to when booking."}
+                depositPolicySentence(rules)}
             </p>
             {P.extraNotice && (
               <p className="mt-1 text-xs text-plum/65">{P.extraNotice}</p>

@@ -1,5 +1,6 @@
 // src/pages/BookingPage.jsx
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { depositPolicyPhrase } from "@/hooks/useBusinessRules";
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
@@ -1089,7 +1090,7 @@ const BookingPage = () => {
                             scope.
                           </li>
                           <li>
-                            A <span className="font-semibold">${(rules?.depositAmount ?? 50).toFixed(0)} non-refundable deposit</span> is paid online to hold your appointment. It is
+                            A <span className="font-semibold">${(rules?.depositAmount ?? 50).toFixed(0)} {depositPolicyPhrase(rules)}</span>{rules?.returningClientDepositAmount != null ? ` (returning clients: $${Number(rules.returningClientDepositAmount).toFixed(0)})` : ''} is paid online to hold your appointment. It is
                             applied to your final balance. Card payments include a processing fee shown at checkout.
                           </li>
                           <li>

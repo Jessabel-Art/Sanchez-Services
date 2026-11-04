@@ -1,0 +1,43 @@
+name: Build release package
+
+# Runs on pushes to the migration branch (and manually once merged). Builds the site + PHP app into one downloadable archive (an Actions artifact).
+# It deploys nothing and uses no secrets; the archive contains no configuration values.
+on:
+  workflow_dispatch:
+  push:
+    branches: ['claude/dreamy-goldberg-vo1q9w']
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: pdo_mysql, curl, openssl, mbstring, sodium
+          coverage: none
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Build
+        run: |
+          npm ci
+          bash backend/deploy/build-release.sh /APP_ROOT_SET_BY_INSTALLER release
+          cp backend/deploy/hostinger/install.sh backend/deploy/hostinger/host-check.php release/
+          git rev-parse HEAD > release/COMMIT
+          ! grep -rq "firestore.googleapis.com" release/public_html/assets/
+          test ! -f release/ss-app/config/config.php
+          tar -czf sanchez-release.tar.gz -C release .
+          sha256sum sanchez-release.tar.gz | tee sanchez-release.tar.gz.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sanchez-release-${{ github.sha }}
+          path: |
+            sanchez-release.tar.gz
+            sanchez-release.tar.gz.sha256
+          retention-days: 14

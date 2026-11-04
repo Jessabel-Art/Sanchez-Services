@@ -61,12 +61,15 @@ abstract class IntegrationTestCase extends TestCase
             'db' => ['dsn' => $dsn, 'user' => getenv('SS_TEST_DB_USER') ?: 'ss', 'password' => getenv('SS_TEST_DB_PASSWORD') ?: 'ss_local_test'],
             'session' => ['secure' => false],
             'stripe' => ['secret_key' => 'sk_test_fake', 'webhook_secret' => 'whsec_test_secret', 'api_base' => "http://127.0.0.1:{$stripePort}"],
-            'mail' => ['transport' => 'log', 'log_path' => "{$dir}/mail.log"],
+            'mail' => ['transport' => 'log', 'log_path' => "{$dir}/mail.log", 'recipient_allowlist' => ['@example.test']],
             'jobs' => ['runner_token' => str_repeat('j', 40)],
             'logging' => ['path' => "{$dir}/logs"],
             'security' => ['rate_limit_multiplier' => 50],
             // Test-only Firebase scrypt parameters (small mem_cost keeps tests fast).
-            'auth' => ['firebase_scrypt' => ['signer_key' => base64_encode(str_repeat('k', 32)), 'salt_separator' => 'Bw==', 'rounds' => 8, 'mem_cost' => 4]],
+            'auth' => [
+                'firebase_scrypt' => ['signer_key' => base64_encode(str_repeat('k', 32)), 'salt_separator' => 'Bw==', 'rounds' => 8, 'mem_cost' => 4],
+                'google' => ['client_id' => 'google-test-client', 'client_secret' => 'google-test-secret', 'token_url' => "http://127.0.0.1:{$stripePort}/google/token", 'auth_url' => 'https://accounts.google.test/auth'],
+            ],
         ];
         $configFile = "{$dir}/config.php";
         file_put_contents($configFile, '<?php return ' . var_export($config, true) . ';');

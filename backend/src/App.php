@@ -23,6 +23,7 @@ use SanchezServices\Security\SessionStore;
 final class App
 {
     public readonly Clock $clock;
+    public readonly \SanchezServices\Auth\GoogleSignIn $google;
     public readonly Db $db;
     public readonly Logger $log;
     public readonly SessionStore $session;
@@ -48,9 +49,13 @@ final class App
         $this->session = new SessionStore($this->db, $config);
         $this->limiter = new RateLimiter($this->db, $this->clock, max(0.01, $config->float('security.rate_limit_multiplier', 1.0)));
         $this->users = new UserRepository($this->db, $this->clock);
-        $this->outbox = new Outbox($this->db, $this->clock, $mailer ?? new Mailer($config), $this->log, $config->string('business.email'));
+        // Outside production, mail goes only to mail.recipient_allowlist (empty = nobody); in production a list restricts too.
+        $allow = $config->get('mail.recipient_allowlist');
+        $allow = is_array($allow) && ($allow || $config->string('app.env') !== 'production') ? array_values($allow) : ($config->string('app.env') !== 'production' ? [] : null);
+        $this->outbox = new Outbox($this->db, $this->clock, $mailer ?? new Mailer($config), $this->log, $config->string('business.email'), $allow);
         $this->notifier = new Notifier($this->db, $this->clock, $config, $this->outbox);
         $this->auth = new AuthService($this->db, $this->clock, $config, $this->users, $this->session, $this->limiter, $this->notifier);
+        $this->google = new \SanchezServices\Auth\GoogleSignIn($this->db, $this->clock, $config, $this->users, $this->session);
         $this->schedule = new Schedule($this->db, $this->clock, $config);
         $this->repo = new BookingRepo($this->db, $this->clock, $config);
         $this->stripe = $stripe ?? new StripeClient($config);

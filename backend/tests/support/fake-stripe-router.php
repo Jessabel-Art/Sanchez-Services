@@ -13,6 +13,20 @@ $save = function () use ($fh, &$state) {
     fwrite($fh, json_encode($state));
     flock($fh, LOCK_UN);
 };
+// Fake Google token endpoint: the test passes the desired ID-token claims as base64url JSON in `code`.
+if ($method === 'POST' && $path === '/google/token') {
+    parse_str(file_get_contents('php://input'), $g);
+    $claims = json_decode((string) base64_decode(strtr((string) ($g['code'] ?? ''), '-_', '+/')), true);
+    if (($g['client_secret'] ?? '') !== 'google-test-secret' || !is_array($claims)) {
+        http_response_code(400);
+        echo json_encode(['error' => 'invalid_grant']);
+    } else {
+        $b64 = static fn ($x) => rtrim(strtr(base64_encode(json_encode($x)), '+/', '-_'), '=');
+        echo json_encode(['id_token' => $b64(['alg' => 'RS256']) . '.' . $b64($claims) . '.sig', 'access_token' => 'x']);
+    }
+    $save();
+    return true;
+}
 if (($_SERVER['HTTP_AUTHORIZATION'] ?? '') !== 'Bearer sk_test_fake') {
     http_response_code(401);
     echo json_encode(['error' => ['message' => 'Invalid API Key provided']]);

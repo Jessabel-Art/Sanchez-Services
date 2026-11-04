@@ -63,7 +63,8 @@ final class AuthService
         return substr(hash('sha256', (string) ($row['password_hash'] ?? '') . '|' . $row['email_lower'] . '|' . $row['role'] . '|' . $row['is_active']), 0, 16);
     }
 
-    private function signIn(array $row): AuthUser
+    /** Starts a session for a verified user row (password, reset, or Google sign-in). */
+    public function signIn(array $row): AuthUser
     {
         $this->session->regenerate();
         $this->session->set('user_id', (int) $row['id']);

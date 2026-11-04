@@ -31,6 +31,8 @@ final class Kernel
 
         $r->add('GET', '/api/auth/session', [$auth, 'session']);
         $r->add('POST', '/api/auth/register', [$auth, 'register']);
+        $r->add('GET', '/api/auth/google/start', [$auth, 'googleStart']);
+        $r->add('GET', '/api/auth/google/callback', [$auth, 'googleCallback']);
         $r->add('POST', '/api/auth/login', [$auth, 'login']);
         $r->add('POST', '/api/auth/logout', [$auth, 'logout']);
         $r->add('POST', '/api/auth/password/forgot', [$auth, 'forgot']);
