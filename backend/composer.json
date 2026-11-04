@@ -1,0 +1,32 @@
+{
+  "name": "sanchez-services/backend",
+  "description": "PHP backend replacing Firebase/Cloud Functions for Sanchez Services",
+  "type": "project",
+  "license": "proprietary",
+  "require": {
+    "php": ">=8.2",
+    "ext-pdo": "*",
+    "ext-curl": "*",
+    "ext-json": "*",
+    "ext-mbstring": "*",
+    "ext-openssl": "*",
+    "phpmailer/phpmailer": "^6.9"
+  },
+  "require-dev": {
+    "phpunit/phpunit": "^10.5"
+  },
+  "autoload": {
+    "psr-4": { "SanchezServices\\": "src/" }
+  },
+  "autoload-dev": {
+    "psr-4": { "SanchezServices\\Tests\\": "tests/" }
+  },
+  "config": {
+    "platform": { "php": "8.2.0" },
+    "optimize-autoloader": true,
+    "sort-packages": true
+  },
+  "scripts": {
+    "test": "phpunit"
+  }
+}
