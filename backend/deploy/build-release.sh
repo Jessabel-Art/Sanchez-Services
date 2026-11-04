@@ -5,7 +5,7 @@
 #   e.g. backend/deploy/build-release.sh /home/u123456789/ss-app release
 #
 # Produces:
-#   <out>/public_html/   -> upload to the domain's document root (SPA built with VITE_BACKEND=php + /api front controller)
+#   <out>/public_html/   -> upload to the domain's document root (built SPA + /api front controller)
 #   <out>/ss-app/        -> upload OUTSIDE the document root (PHP code, vendor/, migrations, bin/)
 # The real config file is NOT included; create it on the server (see config/config.example.php).
 set -euo pipefail
@@ -14,8 +14,8 @@ OUT="${2:-release}"
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 rm -rf "$OUT" && mkdir -p "$OUT/public_html/api" "$OUT/ss-app"
 
-# Frontend (PHP mode). Uses a separate outDir so the tracked dist/ is never touched.
-( cd "$REPO" && VITE_BACKEND=php npx vite build --outDir "$OUT/public_html" --emptyOutDir )
+# Frontend. Uses a separate outDir so the tracked dist/ is never touched.
+( cd "$REPO" && npx vite build --outDir "$OUT/public_html" --emptyOutDir )
 cp "$REPO/backend/deploy/hostinger/root.htaccess" "$OUT/public_html/.htaccess"
 mkdir -p "$OUT/public_html/api"
 cp "$REPO/backend/public/api/index.php" "$REPO/backend/public/api/.htaccess" "$OUT/public_html/api/"

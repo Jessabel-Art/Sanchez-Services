@@ -109,6 +109,7 @@ final class AdminController
         $a = $this->admin();
         $in = Input::from($r);
         $b = $this->app->bookings->updateDetails($a, $r->param('ref'), $in);
+        $this->app->checkout->expireStaleSessions((int) $b['id']);
         $this->audit($a, 'booking_update', 'booking', $b['ref'], ['fields' => array_keys($in->all())], $r);
         return $this->bookingResponse($b);
     }
@@ -167,6 +168,7 @@ final class AdminController
             ], 'admin', $a->id);
             return $this->app->bookings->afterPayment($res['booking'], 'manual:' . $res['payment']['id']);
         });
+        $this->app->checkout->expireStaleSessions((int) $b['id']);
         $this->audit($a, 'payment_record', 'booking', $b['ref'], ['amount' => $amount, 'method' => $method], $r);
         return $this->bookingResponse($b);
     }
@@ -176,6 +178,7 @@ final class AdminController
         $a = $this->admin();
         $in = Input::from($r);
         $b = $this->app->ledger->refund((int) $r->param('id'), (float) $in->num('amount', true, 0.01, 100000), $in->str('reason', false, 500), $a->id);
+        $this->app->checkout->expireStaleSessions((int) $b['id']);
         $this->audit($a, 'payment_refund', 'payment', $r->param('id'), ['amount' => $in->raw('amount')], $r);
         return $this->bookingResponse($b);
     }
@@ -184,6 +187,7 @@ final class AdminController
     {
         $a = $this->admin();
         $b = $this->app->ledger->void((int) $r->param('id'), $a->id, Input::from($r)->str('reason', false, 500));
+        $this->app->checkout->expireStaleSessions((int) $b['id']);
         $this->audit($a, 'payment_void', 'payment', $r->param('id'), [], $r);
         return $this->bookingResponse($b);
     }

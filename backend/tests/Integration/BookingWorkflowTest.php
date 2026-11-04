@@ -60,6 +60,31 @@ final class BookingWorkflowTest extends IntegrationTestCase
         $this->assertGreaterThanOrEqual(28, count($month['days']));
     }
 
+    public function testOfflinePaymentClosesOpenCheckoutSoClientCannotPayTwice(): void
+    {
+        $c = $this->registerClient('twice@example.test');
+        $b = $this->book($c, self::nextWeekday(3), '11:00')['json']['booking'];
+        $sid = $this->lastSessionId();
+        $admin = $this->adminClient();
+        $r = $admin->post('/api/admin/bookings/' . $b['id'] . '/payments', ['amount' => 50, 'method' => 'cash', 'purpose' => 'deposit']);
+        $this->assertSame(200, $r['status'], $r['body']);
+        $this->assertSame('confirmed', $r['json']['booking']['status']);
+        $this->assertSame('expired', $this->stripeState()['sessions'][$sid]['status'], 'stale deposit session expired at Stripe');
+        $this->assertSame('expired', static::$app->db->scalar('SELECT status FROM checkout_sessions WHERE stripe_session_id = ?', [$sid]));
+        $again = $c->post('/api/bookings/' . $b['id'] . '/checkout', ['purpose' => 'deposit']);
+        $this->assertSame('failed-precondition', $again['json']['error']['code']);
+
+        // A balance session opened, then the admin changes the price: the old-amount session is closed.
+        $bal = $c->post('/api/bookings/' . $b['id'] . '/checkout', ['purpose' => 'balance']);
+        $this->assertSame(200, $bal['status'], $bal['body']);
+        $balSid = $this->lastSessionId();
+        $this->assertSame(200, $admin->send('PATCH', '/api/admin/bookings/' . $b['id'], ['totalPrice' => 160])['status']);
+        $this->assertSame('expired', $this->stripeState()['sessions'][$balSid]['status']);
+        $new = $c->post('/api/bookings/' . $b['id'] . '/checkout', ['purpose' => 'balance']);
+        $this->assertNotSame($balSid, $this->lastSessionId(), 'new session for the new amount');
+        $this->assertSame(200, $new['status']);
+    }
+
     public function testOnlineBookingDepositPaymentAndExactlyOnceEmails(): void
     {
         $c = $this->registerClient('casey@example.test', 'correct-horse-1', 'Casey Client');

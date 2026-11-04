@@ -145,7 +145,7 @@ final class Checkout
         if ($pi === '') {
             throw new \DomainException('Paid session has no payment intent.');
         }
-        return $this->db->transaction(function () use ($row, $b, $pi, $eventKey) {
+        $result = $this->db->transaction(function () use ($row, $b, $pi, $eventKey) {
             $this->db->run("UPDATE checkout_sessions SET status = 'complete' WHERE id = ?", [(int) $row['id']]);
             $r = $this->ledger->record($b, [
                 'purpose' => $row['purpose'],
@@ -162,6 +162,10 @@ final class Checkout
             }
             return $this->bookings->afterPayment($r['booking'], $eventKey);
         });
+        if (!$this->db->inTransaction()) {
+            $this->expireStaleSessions((int) $row['booking_id']);
+        }
+        return $result;
     }
 
     /** Called from the success page: confirms with Stripe directly (no waiting for the webhook). */
@@ -191,10 +195,39 @@ final class Checkout
         }
     }
 
+    /**
+     * After any ledger or price change: closes open sessions whose amount no longer matches what is due
+     * (e.g. the deposit was paid in cash), so a client cannot pay the same amount twice.
+     */
+    public function expireStaleSessions(int $bookingId): void
+    {
+        $b = $this->repo->byId($bookingId);
+        if (!$b) {
+            return;
+        }
+        $due = ['deposit' => $this->repo->depositDue($b), 'balance' => $this->repo->balanceDue($b)];
+        foreach ($this->db->all("SELECT * FROM checkout_sessions WHERE booking_id = ? AND status = 'open'", [$bookingId]) as $row) {
+            if (abs((float) $row['amount_net'] - $due[$row['purpose']]) < 0.005) {
+                continue;
+            }
+            try {
+                $this->stripe->expireCheckoutSession((string) $row['stripe_session_id']);
+                $this->db->run("UPDATE checkout_sessions SET status = 'expired' WHERE id = ?", [(int) $row['id']]);
+            } catch (\Throwable $e) {
+                // Left open: reconcileOpen() retries, and a late payment is still recorded and flagged.
+                $this->log->warning('could not expire stale checkout session', ['session' => $row['stripe_session_id'], 'error' => $e->getMessage()]);
+            }
+        }
+    }
+
     /** Recovery: re-checks open sessions with Stripe (missed webhooks, closed browsers). */
     public function reconcileOpen(int $minAgeMinutes = 5, int $limit = 50): array
     {
-        $rows = $this->db->all("SELECT stripe_session_id FROM checkout_sessions WHERE status = 'open' AND created_at <= ? ORDER BY id LIMIT " . max(1, $limit), [Clock::toSql($this->clock->now()->modify("-{$minAgeMinutes} minutes"))]);
+        $rows = $this->db->all(
+            "SELECT cs.id, cs.booking_id, cs.stripe_session_id, b.status AS booking_status FROM checkout_sessions cs JOIN bookings b ON b.id = cs.booking_id
+             WHERE cs.status = 'open' AND cs.created_at <= ? ORDER BY cs.id LIMIT " . max(1, $limit),
+            [Clock::toSql($this->clock->now()->modify("-{$minAgeMinutes} minutes"))]
+        );
         $applied = $expired = $errors = 0;
         foreach ($rows as $r) {
             try {
@@ -204,6 +237,13 @@ final class Checkout
                     $expired++;
                 } elseif ($this->applySession($s, 'recover:' . $s['id'])) {
                     $applied++;
+                } elseif (($s['status'] ?? '') === 'open' && !in_array($r['booking_status'], ['expired', 'cancelled', 'declined'], true)) {
+                    $this->expireStaleSessions((int) $r['booking_id']);
+                } elseif (($s['status'] ?? '') === 'open') {
+                    // An earlier expire call failed (network): retry so the customer can no longer pay a dead booking.
+                    $this->stripe->expireCheckoutSession((string) $r['stripe_session_id']);
+                    $this->db->run("UPDATE checkout_sessions SET status = 'expired' WHERE id = ?", [(int) $r['id']]);
+                    $expired++;
                 }
             } catch (\Throwable $e) {
                 $errors++;
