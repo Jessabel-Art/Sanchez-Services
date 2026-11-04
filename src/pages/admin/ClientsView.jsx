@@ -1,5 +1,5 @@
 // src/pages/admin/ClientsView.jsx
-import React, { useEffect, useState, useMemo } from "react";
+import React, { useState, useMemo } from "react";
 import { formatPhoneForDisplay } from "@/lib/contactModel";
 import { apiGet } from "@/lib/api";
 import { useApiQuery } from "@/hooks/useApiQuery";
@@ -74,7 +74,6 @@ function formatAddressSummary(profile) {
 }
 
 export default function ClientsView() {
-  const [profiles, setProfiles] = useState([]);
   const [search, setSearch] = useState("");
   const [selectedClient, setSelectedClient] = useState(null);
   const { isAdmin, authReady } = useAdminAuth();
@@ -109,7 +108,7 @@ export default function ClientsView() {
     if (profile.lastBookingAt)
       segs.push({ type: "active", label: "Recently active" });
 
-    const createdMs = profile.createdAt?.toMillis?.() ?? 0;
+    const createdMs = profile.createdAt?.getTime?.() ?? 0;
 
     if (Date.now() - createdMs < 1000 * 60 * 60 * 24 * 14)
       segs.push({ type: "new", label: "New" });
@@ -248,7 +247,7 @@ export default function ClientsView() {
           <tbody>
             {filtered.map((p) => {
               const created =
-                p.createdAt?.toDate?.().toLocaleDateString() ?? "—";
+                p.createdAt?.toLocaleDateString?.() ?? "—";
               const segs = getSegments(p);
               const displayName = getDisplayName(p);
               const addressText = formatAddressSummary(p);

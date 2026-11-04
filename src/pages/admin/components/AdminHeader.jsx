@@ -14,7 +14,7 @@ const VIEW_TITLES = {
   calendar: "Calendar",
   reviews: "Reviews",
   reports: "Reports",
-  maintenance: "Maintenance",
+  maintenance: "System status",
 };
 
 const AdminHeader = ({ activeView, user }) => {

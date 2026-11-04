@@ -22,7 +22,7 @@ const NAV_ITEMS = [
   { id: "payments", label: "Payments & Deposits", icon: CreditCard },
   { id: "reviews", label: "Reviews", icon: MessageCircle },
   { id: "reports", label: "Reports", icon: BarChart3 },
-  { id: "maintenance", label: "Maintenance", icon: Wrench },
+  { id: "maintenance", label: "System", icon: Wrench },
 ];
 
 export default function AdminSidebar({ activeView, onChangeView }) {

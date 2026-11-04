@@ -1,15 +1,9 @@
 // src/pages/admin/ReportsView.jsx
 import React from "react";
-import { db } from "@/lib/firebase";
-import {
-  collection,
-  onSnapshot,
-  orderBy,
-  query,
-  where,
-} from "firebase/firestore";
+import { apiGet, qs } from "@/lib/api";
+import { useApiQuery } from "@/hooks/useApiQuery";
+import { normalizeBooking, dateKey as tzDateKey, formatMoney } from "@/lib/model";
 import { csvDownload, money, rangePreset } from "./utils";
-import { useAdminAuth } from "./hooks/useAdminAuth";
 
 // Recharts
 import {
@@ -58,14 +52,6 @@ function sortByWhen(arr) {
   });
 }
 
-function formatFirestoreError(e) {
-  const msg = String(e?.message || e);
-  const match = msg.match(
-    /https:\/\/console\.firebase\.google\.com\/project\/[^ ]+\/firestore\/indexes\?create_composite=.+/
-  );
-  return { message: msg, indexHint: match ? match[0] : null };
-}
-
 /* ---------- KPI card ---------- */
 
 function Kpi({ label, value }) {
@@ -80,51 +66,26 @@ function Kpi({ label, value }) {
 /* ================================================================== */
 
 export default function ReportsView() {
-  const [rows, setRows] = React.useState([]);
-  const { isAdmin, authReady } = useAdminAuth();
+  const bookingsQ = useApiQuery(
+    async () =>
+      sortByWhen(
+        (await apiGet(`/admin/bookings${qs({ all: 1 })}`)).bookings
+          .map(normalizeBooking)
+          .filter((b) => b.status !== "expired")
+          .map((b) => ({ ...b, amount: b.totalPrice, rescheduled: (b.history || []).length > 0 }))
+      ),
+    []
+  );
+  const rows = React.useMemo(() => bookingsQ.data || [], [bookingsQ.data]);
 
   // Default to current month view
   const [range, setRange] = React.useState("month");
-  const [err, setErr] = React.useState(null);
 
   // toggles
   const [includePending, setIncludePending] = React.useState(false);
   const [futureMode, setFutureMode] = React.useState(false);
 
-  // ---- Firestore listeners (one per status to dodge composite index, auth-gated) ----
-  React.useEffect(() => {
-    // Only subscribe when auth is ready and user is confirmed admin
-    if (!authReady || !isAdmin) {
-      return;
-    }
 
-    const base = collection(db, "bookings");
-
-    const mk = (status) =>
-      onSnapshot(
-        query(base, where("status", "==", status), orderBy("startAt", "asc")),
-        (snap) => {
-          setRows((prev) => {
-            const others = prev.filter(
-              (r) => String(r.status || "") !== status
-            );
-            const next = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-            return sortByWhen([...others, ...next]);
-          });
-        },
-        (e) => setErr(formatFirestoreError(e))
-      );
-
-    const unsubs = [
-      mk("pending"),
-      mk("confirmed"),
-      mk("declined"),
-      mk("completed"),
-      mk("cancelled"),
-    ];
-
-    return () => unsubs.forEach((u) => u && u());
-  }, [authReady, isAdmin]);
 
   // ---- Date window (past / current / future) ----
   const windowBounds = React.useMemo(() => {
@@ -170,6 +131,14 @@ export default function ReportsView() {
     const to = new Date(from.getTime() + span);
     return { from, to };
   }, [range, futureMode]);
+
+  // Money actually collected in the window, from the payment ledger (not booking totals).
+  const ledgerFrom = windowBounds.from ? tzDateKey(windowBounds.from) : null;
+  const ledgerTo = windowBounds.to ? tzDateKey(windowBounds.to) : null;
+  const ledgerQ = useApiQuery(() => apiGet(`/admin/reports${qs({ from: ledgerFrom, to: ledgerTo })}`), [ledgerFrom, ledgerTo], {
+    enabled: !!ledgerFrom,
+    poll: false,
+  });
 
   // ---- Filtered view for current range ----
   const view = React.useMemo(() => {
@@ -264,7 +233,7 @@ export default function ReportsView() {
       const when = getWhenDate(r);
       if (!when) continue;
 
-      const key = when.toISOString().slice(0, 10);
+      const key = tzDateKey(when);
       const label = when.toLocaleDateString(undefined, {
         month: "short",
         day: "2-digit",
@@ -381,21 +350,9 @@ export default function ReportsView() {
 
   return (
     <section>
-      {err && (
-        <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 text-rose-700 p-3 text-sm">
-          {err.message}
-          {err.indexHint && (
-            <div className="mt-2">
-              <a
-                className="underline"
-                href={err.indexHint}
-                target="_blank"
-                rel="noreferrer"
-              >
-                Create the required Firestore index
-              </a>
-            </div>
-          )}
+      {bookingsQ.error && (
+        <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 text-rose-700 p-3 text-sm" role="alert">
+          {bookingsQ.error.message}
         </div>
       )}
 
@@ -448,7 +405,7 @@ export default function ReportsView() {
         <Kpi label="Pending" value={String(analytics.pendingCount)} />
         <Kpi label="Cancelled" value={String(analytics.cancelledCount)} />
         <Kpi label="Declined" value={String(analytics.declinedCount)} />
-        <Kpi label="Rescheduled" value={String(analytics.rescheduledCount)} />
+        <Kpi label="Collected (ledger)" value={ledgerQ.data ? formatMoney(ledgerQ.data.net) : "—"} />
       </div>
 
       {/* Charts */}

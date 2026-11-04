@@ -1,375 +1,170 @@
-// src/pages/admin/components/BookingModal.jsx
+// src/pages/admin/components/BookingModal.jsx — admin create / edit booking.
+// Pricing, availability and conflict checks all run on the server; the form only collects input.
 import React from "react";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/use-toast";
-import { db } from "@/lib/firebase";
-import { hasOverlap } from "@/lib/db";
-import { normalizePhone, normalizeAddress } from '@/lib/contactModel';
-import {
-  Timestamp,
-  addDoc,
-  collection,
-  getDocs,
-  query,
-  where,
-  serverTimestamp,
-} from "firebase/firestore";
-import { money } from "../utils";
+import { apiGet, apiPost, apiPatch } from "@/lib/api";
+import { useApiQuery } from "@/hooks/useApiQuery";
+import { dateKey, formatMoney, toDate, timeKey } from "@/lib/model";
 
-/* ---------------- helpers ---------------- */
-
-function startOfDay(d) {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x;
-}
-function endOfDay(d) {
-  const x = new Date(d);
-  x.setHours(23, 59, 59, 999);
-  return x;
-}
-
-function buildInitialForm(initial) {
-  const d =
-    initial?.scheduledAt?.toDate?.() ?? initial?.startAt?.toDate?.() ?? null;
-  const date = d ? d.toISOString().slice(0, 10) : "";
-  const time = d ? d.toTimeString().slice(0, 5) : "";
+function buildInitialForm(initial, defaults) {
+  const d = toDate(initial?.startAt);
   return {
     status: initial?.status ?? "confirmed",
-    serviceName: initial?.serviceName ?? initial?.service ?? "",
-    durationMinutes: initial?.durationMinutes ?? 120,
-    amount: String(initial?.amount ?? initial?.cost ?? ""),
-    name: initial?.contact?.name ?? initial?.name ?? "",
-    email: initial?.contact?.email ?? "",
-    phone: initial?.contact?.phone ?? "",
-    address: initial?.address?.line1 ?? "",
-    notes: initial?.notes ?? "",
-    date,
-    time,
+    serviceSlug: initial?.serviceSlug ?? "standard-cleaning",
+    bedrooms: String(initial?.bedrooms ?? 2),
+    bathrooms: String(initial?.bathrooms ?? 1),
+    sqft: String(initial?.sqft ?? ""),
+    condition: initial?.condition ?? "standard",
+    pets: !!initial?.pets,
+    addons: initial?.addons ?? [],
+    frequency: initial?.frequency ?? "one-time",
+    durationMinutes: initial?.durationMinutes ? String(initial.durationMinutes) : "",
+    totalPrice: initial ? String(initial.totalPrice ?? "") : "",
+    depositAmount: initial ? String(initial.depositAmount ?? "") : "",
+    name: initial?.contact?.name ?? defaults?.name ?? "",
+    email: initial?.contact?.email ?? defaults?.email ?? "",
+    phone: initial?.contact?.phone ?? defaults?.phone ?? "",
+    line1: initial?.address?.line1 ?? defaults?.address?.line1 ?? "",
+    line2: initial?.address?.line2 ?? defaults?.address?.line2 ?? "",
+    city: initial?.address?.city ?? defaults?.address?.city ?? "",
+    state: initial?.address?.state ?? defaults?.address?.state ?? "RI",
+    zip: initial?.address?.zip ?? defaults?.address?.zip ?? "",
+    accessNotes: initial?.accessNotes ?? "",
+    cleanerNotes: initial?.cleanerNotes ?? "",
+    adminNotes: initial?.adminNotes ?? "",
+    date: d ? dateKey(d) : defaults?.date ?? "",
+    time: d ? timeKey(d) : defaults?.time ?? "09:00",
+    notifyClient: true,
   };
 }
 
-/* --------------- component ---------------- */
+const num = (v) => (v === "" || v == null ? undefined : Number(v));
 
-export function BookingModal({ open, initial, onClose, onSave }) {
+function pricingBody(f) {
+  return {
+    serviceSlug: f.serviceSlug,
+    bedrooms: num(f.bedrooms) ?? 0,
+    bathrooms: num(f.bathrooms) ?? 0,
+    sqft: num(f.sqft) ?? 0,
+    condition: f.condition,
+    pets: f.pets,
+    addons: f.addons,
+    frequency: f.frequency,
+  };
+}
+
+const Field = ({ id, label, children }) => (
+  <div>
+    <label htmlFor={id} className="text-xs sm:text-sm text-plum font-medium">
+      {label}
+    </label>
+    {children}
+  </div>
+);
+const selectCls = "mt-1 w-full border border-plum/20 rounded-xl px-3 py-2 bg-white text-sm";
+
+/** Props: open, initial (normalized booking to edit, or null for new), defaults (prefill for new), onClose, onSave(booking). */
+export function BookingModal({ open, initial, defaults, onClose, onSave }) {
   const { toast } = useToast();
   const [saving, setSaving] = React.useState(false);
+  const [form, setForm] = React.useState(() => buildInitialForm(initial, defaults));
+  const [error, setError] = React.useState("");
+  const isEdit = !!initial;
+  const set = (patch) => setForm((f) => ({ ...f, ...patch }));
 
-  // form state
-  const [form, setForm] = React.useState(() => buildInitialForm(initial));
-
-  // manual "send confirmation email" toggle
-  const [sendEmail, setSendEmail] = React.useState(false);
-
-  // whenever modal opens or initial changes, reset form + email toggle
   React.useEffect(() => {
-    if (!open) return;
-    const next = buildInitialForm(initial);
-    setForm(next);
-    setSendEmail(
-      (next.status || "").toLowerCase() === "confirmed" && !!next.email
-    );
-  }, [open, initial]);
-
-  const canSendEmail =
-    (form.status || "").toLowerCase() === "confirmed" &&
-    !!(form.email || "").trim();
-
-  // ----- conflict check against existing bookings on the same day -----
-  const checkConflicts = async (start, end) => {
-    // query only the day range around `start`
-    const dayStart = startOfDay(start);
-    const dayEnd = endOfDay(start);
-
-    const qRef = query(
-      collection(db, "bookings"),
-      where("startAt", ">=", Timestamp.fromDate(dayStart)),
-      where("startAt", "<=", Timestamp.fromDate(dayEnd))
-    );
-
-    const snap = await getDocs(qRef);
-    const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-
-    for (const r of rows) {
-      // ignore the record being edited
-      if (initial?.id && r.id === initial.id) continue;
-
-      const st = String(r.status || "").toLowerCase();
-      // Treat cancelled, declined, and completed as non-blocking
-      if (st === "cancelled" || st === "declined" || st === "completed") continue;
-
-      const rs = r.startAt?.toDate?.() ?? r.scheduledAt?.toDate?.();
-      let re = r.endAt?.toDate?.();
-      if (rs && !re) {
-        const mins = Number(
-          r.durationMinutes ?? (r.durationHours ? r.durationHours * 60 : 120)
-        );
-        re = new Date(rs.getTime() + mins * 60000);
-      }
-      if (!rs || !re) continue;
-
-      const overlap = hasOverlap(start, end, rs, re);
-
-      if (process.env.NODE_ENV !== "production") {
-        console.info("[conflict-check:admin]", {
-          candidateStart: start?.toISOString?.() || start,
-          candidateEnd: end?.toISOString?.() || end,
-          existingStart: rs?.toISOString?.() || rs,
-          existingEnd: re?.toISOString?.() || re,
-          overlap,
-          ignoreId: initial?.id || null,
-          existingId: r.id,
-        });
-      }
-
-      if (overlap) {
-        return {
-          conflict: true,
-          with: {
-            id: r.id,
-            title: r.serviceName || r.service || "Booking",
-            when: `${rs.toLocaleString()} – ${re.toLocaleTimeString([], {
-              hour: "2-digit",
-              minute: "2-digit",
-            })}`,
-          },
-        };
-      }
+    if (open) {
+      setForm(buildInitialForm(initial, defaults));
+      setError("");
     }
-    return { conflict: false };
-  };
+  }, [open, initial, defaults]);
 
-  const handleSave = async () => {
-    const trimmedName = (form.name || "").trim();
-    const trimmedService = (form.serviceName || "").trim();
+  const catalogQ = useApiQuery(() => apiGet("/catalog"), [], { enabled: open, poll: false });
+  const catalog = catalogQ.data;
+  const quoteKey = JSON.stringify(pricingBody(form));
+  const quoteQ = useApiQuery(() => apiPost("/quote", JSON.parse(quoteKey)), [quoteKey], { enabled: open, poll: false });
+  const quote = quoteQ.data;
+  const duration = num(form.durationMinutes) || quote?.durationMinutes || 120;
+  const validDate = /^\d{4}-\d{2}-\d{2}$/.test(form.date);
+  const availQ = useApiQuery(
+    () => apiGet(`/availability?date=${form.date}&durationMinutes=${duration}${isEdit ? `&booking=${encodeURIComponent(initial.id)}` : ""}`),
+    [form.date, duration, isEdit && initial.id],
+    { enabled: open && validDate, poll: false }
+  );
 
-    // simple UX validation with explicit feedback
-    if (!trimmedName) {
-      toast({ title: "Client name required", variant: "destructive" });
-      return;
-    }
-    if (!trimmedService) {
-      toast({ title: "Service required", variant: "destructive" });
-      return;
-    }
-    if (!form.date || !form.time) {
-      toast({ title: "Pick a date and time", variant: "destructive" });
-      return;
-    }
+  if (!open) return null;
 
-    // compose start/end timestamps using deterministic local date construction
-    // This matches the client booking form logic but adapted for admin inputs
-    function buildLocalDate(dateStr, timeStr) {
-      // dateStr: "YYYY-MM-DD" from <input type="date">
-      // timeStr: "HH:MM" from <input type="time"> (24-hour format)
-      const [y, m, d] = String(dateStr).split("-").map(Number);
-      const [hh, mm] = String(timeStr).split(":").map(Number);
+  const service = catalog?.services?.find((s) => s.slug === form.serviceSlug);
+  const toggleAddon = (id) => set({ addons: form.addons.includes(id) ? form.addons.filter((a) => a !== id) : [...form.addons, id] });
 
-      // Create local date (month is 0-indexed in JS)
-      const dt = new Date(y, (m || 1) - 1, d || 1, hh || 0, mm || 0, 0, 0);
-      if (Number.isNaN(dt.getTime())) {
-        throw new Error("invalid date: Could not construct date from inputs");
-      }
-      return dt;
-    }
-
-    const start = buildLocalDate(form.date, form.time);
-    const durMin = Math.max(
-      30,
-      parseInt(String(form.durationMinutes || 120), 10)
-    );
-    const end = new Date(start.getTime() + durMin * 60000);
-    const dateKey = start.toISOString().slice(0, 10);
-
-    // basic validation before conflict guard
-    if (Number.isNaN(start.getTime())) {
-      toast({
-        variant: "destructive",
-        title: "Pick a valid date/time",
-        description: "Please set both date and time before saving.",
-      });
-      return;
-    }
-
-    // conflict guard
+  const submit = async () => {
+    setError("");
+    setSaving(true);
     try {
-      setSaving(true);
-      const { conflict, with: info } = await checkConflicts(start, end);
-      if (conflict) {
-        setSaving(false);
-        toast({
-          title: "Time conflict",
-          description: `Overlaps with "${info.title}" (${info.when}). Pick another time.`,
-          variant: "destructive",
+      const contact = { name: form.name.trim(), email: form.email.trim(), phone: form.phone.trim() };
+      const address = { line1: form.line1.trim(), line2: form.line2.trim() || null, city: form.city.trim(), state: form.state.trim(), zip: form.zip.trim() };
+      const notes = { accessNotes: form.accessNotes || null, cleanerNotes: form.cleanerNotes || null, adminNotes: form.adminNotes || null };
+      let res;
+      if (!isEdit) {
+        res = await apiPost("/admin/bookings", {
+          ...pricingBody(form),
+          contact,
+          address,
+          ...notes,
+          date: form.date,
+          time: form.time,
+          status: form.status,
+          durationMinutes: num(form.durationMinutes),
+          totalPrice: num(form.totalPrice),
+          depositAmount: num(form.depositAmount),
+          userId: defaults?.userId,
+          notifyClient: form.notifyClient,
         });
-        return;
-      }
-    } catch (err) {
-      setSaving(false);
-      toast({
-        title: "Could not check for conflicts",
-        description: String(err?.message || err),
-        variant: "destructive",
-      });
-      return;
-    }
-
-    const priceValue = Number(form.amount || 0);
-    
-    // Build payload matching client booking form structure EXACTLY
-    // This ensures admin-created bookings appear in client portal
-    const payload = {
-      // Status
-      status: form.status || "confirmed",
-      
-      // Service info
-      serviceName: trimmedService,
-      
-      // Scheduling - use same field names and Timestamp format as client
-      startAt: Timestamp.fromDate(start),
-      endAt: Timestamp.fromDate(end),
-      scheduledAt: Timestamp.fromDate(start), // client form includes this
-      durationMinutes: durMin,
-      dateKey,
-      
-      // Canonical billing inputs; the admin callable owns persisted payment fields
-      totalPrice: priceValue,
-      depositAmount: 0, // admin bookings typically confirmed without deposit
-      depositPaid: false,
-      
-      // Timestamps (matching client)
-      updatedAt: serverTimestamp(),
-      
-      // Notes
-      notes: form.notes || "",
-      
-      // Contact - nested object matching client structure
-      contact: {
-        name: trimmedName,
-        email: (form.email || "").trim(),
-        emailLower: (form.email || "").trim().toLowerCase(),
-        phone: normalizePhone(form.phone || ""),
-        phoneRaw: form.phone || "",
-      },
-      
-      // Address
-      address: normalizeAddress({ line1: (form.address || "").trim() }),
-      
-      // Normalized lookup fields for client portal matching (top-level)
-      contactEmailLower: (form.email || "").trim().toLowerCase() || null,
-      contactPhoneNormalized: (() => {
-        const n = normalizePhone(form.phone || "");
-        if (n.length === 11 && n.startsWith("1")) return n.slice(1);
-        return n || null;
-      })(),
-      
-      // Admin-specific metadata
-      createdVia: initial ? "owner_update" : "owner_manual",
-    };
-
-    // Development logging to compare with client payload structure
-    if (process.env.NODE_ENV !== "production") {
-      const logDateField = (val) => ({
-        type: typeof val,
-        ctor: val?.constructor?.name,
-        hasToDate: typeof val?.toDate === "function",
-        value: val,
-      });
-      console.log("[BookingModal] Admin payload (pre-onSave):", {
-        formDate: form.date,
-        formTime: form.time,
-        startString: start.toISOString(),
-        endString: end.toISOString(),
-        startTimestamp: start.getTime(),
-        endTimestamp: end.getTime(),
-        dateKey,
-        startAt: logDateField(payload.startAt),
-        endAt: logDateField(payload.endAt),
-        scheduledAt: logDateField(payload.scheduledAt),
-      });
-    }
-
-    try {
-      // Save via parent callback (this ensures ownerKeys/user linkage etc.)
-      await onSave?.(payload, initial?.id || null);
-
-      let description = "Booking saved.";
-
-      // Optional: send confirmation email via Firestore /mail collection
-      if (sendEmail && canSendEmail) {
-        try {
-          await addDoc(collection(db, "mail"), {
-            to: [payload.contact.email],
-            message: {
-              subject: "Your Sanchez Services booking is confirmed",
-              text: `Hi ${payload.contact.name},
-
-Your booking has been confirmed!
-
-Service: ${payload.serviceName}
-Date: ${form.date}
-Time: ${form.time}
-Duration: ${payload.durationMinutes} minutes
-Address: ${payload.address.line1}
-Amount: $${priceValue.toFixed(2)}
-Status: ${payload.status}
-
-${payload.notes ? `Notes: ${payload.notes}` : ''}
-
-Thank you for choosing Sanchez Services!`,
-            },
-            createdAt: Timestamp.fromDate(new Date()),
+      } else {
+        // Details first; a date/time change then goes through the reschedule endpoint (same conflict check as clients).
+        const body = { contact, address, ...notes };
+        const pricingChanged = JSON.stringify(pricingBody(buildInitialForm(initial))) !== quoteKey;
+        if (pricingChanged) Object.assign(body, pricingBody(form));
+        if (pricingChanged || num(form.totalPrice) !== initial.totalPrice) {
+          if (num(form.totalPrice) !== undefined) body.totalPrice = num(form.totalPrice);
+        }
+        if (num(form.depositAmount) !== undefined && num(form.depositAmount) !== initial.depositAmount) body.depositAmount = num(form.depositAmount);
+        if (num(form.durationMinutes) && num(form.durationMinutes) !== initial.durationMinutes) body.durationMinutes = num(form.durationMinutes);
+        res = await apiPatch(`/admin/bookings/${encodeURIComponent(initial.id)}`, body);
+        const d = toDate(initial.startAt);
+        if (form.date !== dateKey(d) || form.time !== timeKey(d)) {
+          res = await apiPost(`/admin/bookings/${encodeURIComponent(initial.id)}/reschedule`, {
+            date: form.date,
+            time: form.time,
+            notifyClient: form.notifyClient,
           });
-
-          description = "Booking saved and confirmation email sent.";
-        } catch (err) {
-          // don't fail the booking if email fails
-          // eslint-disable-next-line no-console
-          console.error("Mail collection email error", err);
-          description =
-            "Booking saved, but the confirmation email could not be sent.";
         }
       }
-
-      toast({
-        title: initial ? "Booking updated" : "Booking created",
-        description,
-      });
-
+      toast({ title: isEdit ? "Booking updated" : "Booking created" });
+      onSave?.(res.booking);
       onClose?.();
     } catch (e) {
-      // Log full error to console for debugging
-      console.error("[BookingModal] Save failed:", e);
-      console.error("[BookingModal] Error stack:", e?.stack);
-      
-      const msg = String(e?.message || e);
-      toast({
-        title: "Could not save booking",
-        description: msg,
-        variant: "destructive",
-      });
+      setError(e.message);
     } finally {
       setSaving(false);
     }
   };
 
-  if (!open) return null;
+  const slots = availQ.data?.slots || [];
 
-  // NOTE: pointer-events + z-index fix so the action row stays clickable
   return (
     <div className="fixed inset-0 z-[120] pointer-events-none">
-      {/* Backdrop */}
-      <div
-        className="absolute inset-0 bg-black/50 pointer-events-auto select-none"
-        onClick={onClose}
-        aria-hidden="true"
-      />
-
-      {/* Dialog container */}
+      <div className="absolute inset-0 bg-black/50 pointer-events-auto select-none" onClick={onClose} aria-hidden="true" />
       <div className="absolute inset-0 flex items-center justify-center p-2 sm:p-4 pointer-events-auto">
-        <div className="relative z-[10] w-full max-w-3xl rounded-xl sm:rounded-2xl border border-plum/15 bg-white shadow-2xl max-h-[95vh] overflow-y-auto">
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="booking-modal-title"
+          className="relative z-[10] w-full max-w-3xl rounded-xl sm:rounded-2xl border border-plum/15 bg-white shadow-2xl max-h-[95vh] overflow-y-auto"
+        >
           <button
             type="button"
             className="absolute right-2 top-2 sm:right-3 sm:top-3 text-plum/70 hover:text-plum text-2xl sm:text-3xl w-8 h-8 flex items-center justify-center"
@@ -378,303 +173,230 @@ Thank you for choosing Sanchez Services!`,
           >
             ×
           </button>
-
           <div className="p-4 sm:p-5 md:p-6">
-            <h3 className="text-lg sm:text-xl font-semibold text-plum mb-1 pr-8">
-              {initial ? "Edit / Reschedule Booking" : "New Booking"}
+            <h3 id="booking-modal-title" className="text-lg sm:text-xl font-semibold text-plum mb-1 pr-8">
+              {isEdit ? `Edit booking #${initial.invoiceNumber}` : "New Booking"}
             </h3>
-            <p className="text-xs sm:text-sm text-plum/70 mb-3 sm:mb-4">
-              Fill in the details below, then save.
-            </p>
+            <p className="text-xs sm:text-sm text-plum/70 mb-3 sm:mb-4">Prices and availability are checked by the server when you save.</p>
 
-            <div className="grid grid-cols-1 lg:grid-cols-[1fr,280px] gap-4 sm:gap-5 lg:gap-6">
-              {/* Left column: form */}
+            <div className="grid grid-cols-1 lg:grid-cols-[1fr,260px] gap-4 sm:gap-5 lg:gap-6">
               <div className="space-y-3 sm:space-y-4">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3">
-                  <div>
-                    <label htmlFor="booking-client-name" className="text-xs sm:text-sm text-plum font-medium">
-                      Client name
-                    </label>
-                    <Input
-                      id="booking-client-name"
-                      autoFocus
-                      value={form.name}
-                      onChange={(e) =>
-                        setForm({ ...form, name: e.target.value })
-                      }
-                      className="bg-white mt-1 text-sm"
-                    />
-                  </div>
-                  <div>
-                    <label htmlFor="booking-client-phone" className="text-xs sm:text-sm text-plum font-medium">
-                      Phone
-                    </label>
-                    <Input
-                      id="booking-client-phone"
-                      value={form.phone}
-                      onChange={(e) =>
-                        setForm({ ...form, phone: e.target.value })
-                      }
-                      className="bg-white mt-1 text-sm"
-                    />
-                  </div>
-                  <div>
-                    <label htmlFor="booking-client-email" className="text-xs sm:text-sm text-plum font-medium">
-                      Email
-                    </label>
-                    <Input
-                      id="booking-client-email"
-                      type="email"
-                      value={form.email}
-                      onChange={(e) =>
-                        setForm({ ...form, email: e.target.value })
-                      }
-                      className="bg-white mt-1"
-                    />
-                  </div>
-                  <div>
-                    <label htmlFor="booking-status" className="text-sm text-plum font-medium">
-                      Status
-                    </label>
-                    <select
-                      id="booking-status"
-                      value={form.status}
-                      onChange={(e) =>
-                        setForm({ ...form, status: e.target.value })
-                      }
-                      className="mt-1 w-full border border-plum/20 rounded-xl px-3 py-2 bg-white"
-                    >
-                      <option value="confirmed">Confirmed</option>
-                      <option value="pending">Pending</option>
-                      <option value="declined">Declined</option>
-                      <option value="completed">Completed</option>
-                      <option value="cancelled">Cancelled</option>
-                    </select>
+                  <Field id="bm-name" label="Client name">
+                    <Input id="bm-name" autoFocus value={form.name} onChange={(e) => set({ name: e.target.value })} className="bg-white mt-1 text-sm" />
+                  </Field>
+                  <Field id="bm-phone" label="Phone">
+                    <Input id="bm-phone" value={form.phone} onChange={(e) => set({ phone: e.target.value })} className="bg-white mt-1 text-sm" />
+                  </Field>
+                  <Field id="bm-email" label="Email">
+                    <Input id="bm-email" type="email" value={form.email} onChange={(e) => set({ email: e.target.value })} className="bg-white mt-1 text-sm" />
+                  </Field>
+                  {!isEdit && (
+                    <Field id="bm-status" label="Status">
+                      <select id="bm-status" value={form.status} onChange={(e) => set({ status: e.target.value })} className={selectCls}>
+                        <option value="confirmed">Confirmed</option>
+                        <option value="pending">Pending</option>
+                      </select>
+                    </Field>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3">
+                  <Field id="bm-line1" label="Street address">
+                    <Input id="bm-line1" value={form.line1} onChange={(e) => set({ line1: e.target.value })} className="bg-white mt-1 text-sm" />
+                  </Field>
+                  <Field id="bm-line2" label="Apt / unit">
+                    <Input id="bm-line2" value={form.line2} onChange={(e) => set({ line2: e.target.value })} className="bg-white mt-1 text-sm" />
+                  </Field>
+                  <Field id="bm-city" label="City">
+                    <Input id="bm-city" value={form.city} onChange={(e) => set({ city: e.target.value })} className="bg-white mt-1 text-sm" />
+                  </Field>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Field id="bm-state" label="State">
+                      <Input id="bm-state" maxLength={2} value={form.state} onChange={(e) => set({ state: e.target.value.toUpperCase() })} className="bg-white mt-1 text-sm" />
+                    </Field>
+                    <Field id="bm-zip" label="ZIP">
+                      <Input id="bm-zip" inputMode="numeric" value={form.zip} onChange={(e) => set({ zip: e.target.value })} className="bg-white mt-1 text-sm" />
+                    </Field>
                   </div>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 sm:gap-3">
-                  {/* Service (dropdown) */}
                   <div className="sm:col-span-2">
-                    <label htmlFor="booking-service" className="text-xs sm:text-sm text-plum font-medium">
-                      Service
-                    </label>
-                    <select
-                      id="booking-service"
-                      name="service"
-                      value={form.serviceName}
-                      onChange={(e) =>
-                        setForm({ ...form, serviceName: e.target.value })
-                      }
-                      className="mt-1 w-full border border-plum/20 rounded-xl px-3 py-2 bg-white text-sm"
-                    >
-                      {/* Preserve nonstandard existing values so edits don't wipe them */}
-                      {form.serviceName &&
-                        ![
-                          "Residential Cleaning",
-                          "Deep Clean",
-                          "Move-In/Move-Out",
-                          "Office Cleaning",
-                        ].includes(form.serviceName) && (
-                          <option value={form.serviceName}>
-                            {form.serviceName}
+                    <Field id="bm-service" label="Service">
+                      <select id="bm-service" value={form.serviceSlug} onChange={(e) => set({ serviceSlug: e.target.value })} className={selectCls}>
+                        {(catalog?.services || []).map((s) => (
+                          <option key={s.slug} value={s.slug}>
+                            {s.name}
                           </option>
-                        )}
-
-                      <option value="">Select a service…</option>
-                      <option value="Residential Cleaning">
-                        Residential Cleaning
-                      </option>
-                      <option value="Deep Clean">Deep Clean</option>
-                      <option value="Move-In/Move-Out">Move-In/Move-Out</option>
-                      <option value="Office Cleaning">Office Cleaning</option>
+                        ))}
+                      </select>
+                    </Field>
+                  </div>
+                  <Field id="bm-frequency" label="Frequency">
+                    <select id="bm-frequency" value={form.frequency} onChange={(e) => set({ frequency: e.target.value })} className={selectCls}>
+                      {(catalog?.frequencies || []).map((f) => (
+                        <option key={f.id} value={f.id}>
+                          {f.name}
+                        </option>
+                      ))}
                     </select>
-                  </div>
-
-                  <div>
-                    <label htmlFor="booking-amount" className="text-xs sm:text-sm text-plum font-medium">
-                      Amount
-                    </label>
-                    <Input
-                      id="booking-amount"
-                      type="number"
-                      min={0}
-                      step="1"
-                      value={form.amount}
-                      onChange={(e) =>
-                        setForm({ ...form, amount: e.target.value })
-                      }
-                      className="bg-white mt-1 text-sm"
-                    />
-                  </div>
+                  </Field>
+                  {service?.pricedBySqft ? (
+                    <Field id="bm-sqft" label="Square feet">
+                      <Input id="bm-sqft" inputMode="numeric" value={form.sqft} onChange={(e) => set({ sqft: e.target.value })} className="bg-white mt-1 text-sm" />
+                    </Field>
+                  ) : (
+                    <>
+                      <Field id="bm-bed" label="Bedrooms">
+                        <Input id="bm-bed" type="number" min="0" value={form.bedrooms} onChange={(e) => set({ bedrooms: e.target.value })} className="bg-white mt-1 text-sm" />
+                      </Field>
+                      <Field id="bm-bath" label="Bathrooms">
+                        <Input id="bm-bath" type="number" min="0" step="0.5" value={form.bathrooms} onChange={(e) => set({ bathrooms: e.target.value })} className="bg-white mt-1 text-sm" />
+                      </Field>
+                    </>
+                  )}
+                  <Field id="bm-condition" label="Condition">
+                    <select id="bm-condition" value={form.condition} onChange={(e) => set({ condition: e.target.value })} className={selectCls}>
+                      <option value="light">Light</option>
+                      <option value="standard">Standard</option>
+                      <option value="heavy">Heavy</option>
+                    </select>
+                  </Field>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 sm:gap-3">
-                  <div className="sm:col-span-2">
-                    <label htmlFor="booking-address" className="text-xs sm:text-sm text-plum font-medium">
-                      Address
+                <fieldset>
+                  <legend className="text-xs sm:text-sm text-plum font-medium">Add-ons</legend>
+                  <div className="flex flex-wrap gap-2 mt-1">
+                    {(catalog?.addons || []).map((a) => (
+                      <label key={a.id} className="text-xs flex items-center gap-1 border border-plum/15 rounded-full px-2 py-1 cursor-pointer">
+                        <input type="checkbox" checked={form.addons.includes(a.id)} onChange={() => toggleAddon(a.id)} />
+                        {a.label} (+{formatMoney(a.price)})
+                      </label>
+                    ))}
+                    <label className="text-xs flex items-center gap-1 border border-plum/15 rounded-full px-2 py-1 cursor-pointer">
+                      <input type="checkbox" checked={form.pets} onChange={(e) => set({ pets: e.target.checked })} />
+                      Pets in home
                     </label>
-                    <Input
-                      id="booking-address"
-                      value={form.address}
-                      onChange={(e) =>
-                        setForm({ ...form, address: e.target.value })
-                      }
-                      className="bg-white mt-1 text-sm"
-                      placeholder="123 Main St"
-                    />
                   </div>
-                  <div>
-                    <label htmlFor="booking-duration" className="text-xs sm:text-sm text-plum font-medium">
-                      Duration (minutes)
-                    </label>
+                </fieldset>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 sm:gap-3">
+                  <Field id="bm-date" label="Date">
+                    <Input id="bm-date" type="date" value={form.date} onChange={(e) => set({ date: e.target.value })} className="bg-white mt-1 text-sm" />
+                  </Field>
+                  <Field id="bm-time" label="Start time">
+                    <Input id="bm-time" type="time" step="900" value={form.time} onChange={(e) => set({ time: e.target.value })} className="bg-white mt-1 text-sm" />
+                  </Field>
+                  <Field id="bm-duration" label="Duration (min)">
                     <Input
-                      id="booking-duration"
+                      id="bm-duration"
                       type="number"
-                      min={30}
-                      step={15}
+                      min="30"
+                      step="15"
+                      placeholder={String(quote?.durationMinutes ?? "")}
                       value={form.durationMinutes}
-                      onChange={(e) =>
-                        setForm({
-                          ...form,
-                          durationMinutes: e.target.value,
-                        })
-                      }
+                      onChange={(e) => set({ durationMinutes: e.target.value })}
                       className="bg-white mt-1 text-sm"
                     />
-                  </div>
+                  </Field>
                 </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 sm:gap-3">
-                  <div>
-                    <label htmlFor="booking-date" className="text-xs sm:text-sm text-plum font-medium">
-                      Date
-                    </label>
-                    <Input
-                      id="booking-date"
-                      type="date"
-                      value={form.date}
-                      onChange={(e) =>
-                        setForm({ ...form, date: e.target.value })
-                      }
-                      className="bg-white mt-1 text-sm"
-                    />
-                  </div>
-                  <div>
-                    <label htmlFor="booking-time" className="text-xs sm:text-sm text-plum font-medium">
-                      Time
-                    </label>
-                    <Input
-                      id="booking-time"
-                      type="time"
-                      value={form.time}
-                      onChange={(e) =>
-                        setForm({ ...form, time: e.target.value })
-                      }
-                      className="bg-white mt-1 text-sm"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs sm:text-sm text-plum font-medium">
-                      Preview
-                    </label>
-                    <div className="mt-1 h-10 flex items-center text-xs sm:text-sm text-plum/80">
-                      {form.amount ? money(form.amount) : "$0"} •{" "}
-                      {form.durationMinutes} min
-                    </div>
-                  </div>
-                </div>
-
-                <div>
-                  <label htmlFor="booking-notes" className="text-xs sm:text-sm text-plum font-medium">
-                    Notes
-                  </label>
-                  <Textarea
-                    id="booking-notes"
-                    rows={3}
-                    value={form.notes}
-                    onChange={(e) =>
-                      setForm({ ...form, notes: e.target.value })
-                    }
-                    className="bg-white mt-1 text-sm"
-                  />
-                </div>
-
-                {/* ACTIONS + email toggle */}
-                <div className="flex flex-col gap-2 pt-1">
-                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                    <Button
-                      type="button"
-                      onClick={handleSave}
-                      disabled={saving}
-                      className="rounded-full bg-plum text-white w-full sm:w-auto"
-                    >
-                      {saving
-                        ? "Saving…"
-                        : initial
-                        ? "Save changes"
-                        : "Create booking"}
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      onClick={onClose}
-                      className="rounded-full w-full sm:w-auto"
-                    >
-                      Cancel
-                    </Button>
-                  </div>
-
-                  <label className="flex items-start sm:items-center gap-2 text-xs text-plum/80">
-                    <input
-                      type="checkbox"
-                      checked={sendEmail && canSendEmail}
-                      onChange={(e) => setSendEmail(e.target.checked)}
-                      disabled={!canSendEmail}
-                    />
-                    <span>Send confirmation email to client</span>
-                    {!canSendEmail && (
-                      <span className="text-[11px] text-plum/50">
-                        (requires client email and status set to Confirmed)
+                {validDate && (
+                  <div className="text-xs text-plum/70">
+                    {availQ.loading && !availQ.data ? (
+                      "Checking availability…"
+                    ) : availQ.data?.reason ? (
+                      <span className="text-rose-700">Day unavailable: {availQ.data.reason}</span>
+                    ) : (
+                      <span className="flex flex-wrap gap-1 items-center">
+                        Standard slots:
+                        {slots.map((s) => (
+                          <button
+                            type="button"
+                            key={s.time}
+                            disabled={!s.available}
+                            onClick={() => set({ time: s.time })}
+                            className={`px-2 py-0.5 rounded-full border ${s.available ? "border-emerald-300 text-emerald-800 hover:bg-emerald-50" : "border-slate-200 text-slate-400 line-through"}`}
+                          >
+                            {s.label}
+                          </button>
+                        ))}
+                        <span className="ml-1">(admins may choose any time within business hours)</span>
                       </span>
                     )}
-                  </label>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 sm:gap-3">
+                  <Field id="bm-access" label="Access notes">
+                    <Textarea id="bm-access" rows={2} value={form.accessNotes} onChange={(e) => set({ accessNotes: e.target.value })} className="bg-white mt-1 text-sm" />
+                  </Field>
+                  <Field id="bm-cleaner" label="Cleaner notes">
+                    <Textarea id="bm-cleaner" rows={2} value={form.cleanerNotes} onChange={(e) => set({ cleanerNotes: e.target.value })} className="bg-white mt-1 text-sm" />
+                  </Field>
+                  <Field id="bm-admin" label="Admin notes (private)">
+                    <Textarea id="bm-admin" rows={2} value={form.adminNotes} onChange={(e) => set({ adminNotes: e.target.value })} className="bg-white mt-1 text-sm" />
+                  </Field>
                 </div>
               </div>
 
-              {/* Right column: summary */}
-              <div className="rounded-xl sm:rounded-2xl border border-plum/15 bg-white p-3 sm:p-4">
-                <div className="text-xs sm:text-sm text-plum/60 mb-2">Summary</div>
-                <ul className="text-xs sm:text-sm space-y-1 text-plum/80">
-                  <li>
-                    <b>Status:</b> {form.status}
-                  </li>
-                  <li>
-                    <b>Service:</b> {form.serviceName || "—"}
-                  </li>
-                  <li>
-                    <b>Amount:</b> {form.amount ? money(form.amount) : "—"}
-                  </li>
-                  <li>
-                    <b>Duration:</b> {form.durationMinutes} min
-                  </li>
-                  <li>
-                    <b>Date/Time:</b> {form.date || "—"} {form.time || ""}
-                  </li>
-                  <li>
-                    <b>Name:</b> {form.name || "—"}
-                  </li>
-                  <li>
-                    <b>Email:</b> {form.email || "—"}
-                  </li>
-                  <li>
-                    <b>Phone:</b> {form.phone || "—"}
-                  </li>
-                  <li>
-                    <b>Address:</b> {form.address || "—"}
-                  </li>
-                </ul>
-              </div>
+              <aside className="rounded-xl border border-plum/10 bg-[#FFF7FB] p-3 sm:p-4 space-y-3 text-sm h-fit">
+                <p className="font-semibold text-plum">Price</p>
+                {quoteQ.error ? (
+                  <p className="text-rose-700 text-xs">{quoteQ.error.message}</p>
+                ) : quote ? (
+                  <>
+                    <ul className="space-y-1 text-xs text-plum/80">
+                      {quote.lineItems.map((li, i) => (
+                        <li key={i} className="flex justify-between gap-2">
+                          <span>{li.label}</span>
+                          <span>{formatMoney(li.amount)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                    <p className="flex justify-between font-semibold text-plum border-t border-plum/10 pt-2">
+                      <span>Calculated total</span>
+                      <span>{formatMoney(quote.totalPrice)}</span>
+                    </p>
+                    <p className="text-xs text-plum/60">Estimated {quote.durationHours} h</p>
+                  </>
+                ) : (
+                  <p className="text-xs text-plum/60">Calculating…</p>
+                )}
+                <Field id="bm-total" label="Override total (optional)">
+                  <Input id="bm-total" type="number" min="0" step="0.01" value={form.totalPrice} onChange={(e) => set({ totalPrice: e.target.value })} className="bg-white mt-1 text-sm" />
+                </Field>
+                <Field id="bm-deposit" label="Deposit required">
+                  <Input
+                    id="bm-deposit"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    placeholder={String(quote?.depositAmount ?? "")}
+                    value={form.depositAmount}
+                    onChange={(e) => set({ depositAmount: e.target.value })}
+                    className="bg-white mt-1 text-sm"
+                  />
+                </Field>
+                <label className="flex items-center gap-2 text-xs text-plum">
+                  <input type="checkbox" checked={form.notifyClient} onChange={(e) => set({ notifyClient: e.target.checked })} />
+                  Email the client
+                </label>
+              </aside>
+            </div>
+
+            {error && (
+              <p className="mt-3 text-sm text-rose-700" role="alert">
+                {error}
+              </p>
+            )}
+            <div className="mt-4 flex justify-end gap-2">
+              <Button variant="outline" onClick={onClose} className="border-plum/30 text-plum">
+                Cancel
+              </Button>
+              <Button onClick={submit} disabled={saving} className="bg-[#E2A82B] text-[#431039] hover:bg-[#F0BA3E]">
+                {saving ? "Saving…" : isEdit ? "Save changes" : "Create booking"}
+              </Button>
             </div>
           </div>
         </div>
@@ -682,3 +404,5 @@ Thank you for choosing Sanchez Services!`,
     </div>
   );
 }
+
+export default BookingModal;

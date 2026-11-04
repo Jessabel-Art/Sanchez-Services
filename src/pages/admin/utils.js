@@ -27,7 +27,8 @@ export function rangePreset(preset) {
 export function csvDownload(filename, rows, header) {
   const headerLine = header.join(",");
   const lines = rows.map((r) => header.map((h) => {
-    const v = String(r[h] ?? "").replaceAll('"','""').replaceAll("\n"," ");
+    let v = String(r[h] ?? "").replaceAll('"','""').replaceAll("\n"," ");
+    if (/^[=+\-@\t\r]/.test(v) && !/^-?\d/.test(v)) v = `'${v}`; // spreadsheet formula injection guard
     return `"${v}"`;
   }).join(","));
   const csv = [headerLine, ...lines].join("\n");

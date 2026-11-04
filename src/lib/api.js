@@ -85,6 +85,8 @@ export async function apiGet(path) {
 }
 
 /** POST/PATCH/DELETE with CSRF; retries once after refreshing a stale token. */
+const READ_ONLY_POSTS = new Set(["/quote"]);
+
 export async function apiSend(method, path, body = {}) {
   if (!csrfToken) await loadSession();
   let out;
@@ -99,7 +101,8 @@ export async function apiSend(method, path, body = {}) {
     }
   }
   absorb(out);
-  writeListeners.forEach((fn) => fn(path));
+  // Read-only POSTs (price quotes) don't invalidate cached data.
+  if (!READ_ONLY_POSTS.has(path)) writeListeners.forEach((fn) => fn(path));
   return out;
 }
 

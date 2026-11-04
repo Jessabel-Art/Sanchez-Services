@@ -1,18 +1,10 @@
 // src/pages/admin/DashboardHome.jsx
 import React from "react";
-import { db } from "@/lib/firebase";
-import {
-  collection,
-  onSnapshot,
-  query,
-  where,
-  orderBy,
-  Timestamp,
-} from "firebase/firestore";
+import { apiGet, qs } from "@/lib/api";
+import { useApiQuery } from "@/hooks/useApiQuery";
+import { normalizeBooking, dateKey as tzDateKey } from "@/lib/model";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
-import { useToast } from "@/components/ui/use-toast";
-import { useAdminAuth } from "./hooks/useAdminAuth";
 import { money } from "./utils";
 import {
   ResponsiveContainer,
@@ -67,50 +59,21 @@ function endOfDay(d) {
 }
 
 export default function DashboardHome({ onChangeView }) {
-  const { toast } = useToast();
-  const { isAdmin, authReady } = useAdminAuth();
-  const [rows, setRows] = React.useState([]);
-  const [loading, setLoading] = React.useState(true);
-
-  // ---- Firestore subscription: this month + next 7 days (auth-gated) ----
-  React.useEffect(() => {
-    // Only subscribe when auth is ready and user is confirmed admin
-    if (!authReady || !isAdmin) {
-      setLoading(false);
-      return;
-    }
-
-    const today = new Date();
-    const from = new Date(today.getFullYear(), today.getMonth(), 1); // start of month
-    const to = new Date(today.getFullYear(), today.getMonth() + 1, 7); // a week into next month
-
-    const qRef = query(
-      collection(db, "bookings"),
-      where("scheduledAt", ">=", Timestamp.fromDate(from)),
-      where("scheduledAt", "<=", Timestamp.fromDate(to)),
-      orderBy("scheduledAt", "asc")
-    );
-
-    const unsub = onSnapshot(
-      qRef,
-      (snap) => {
-        const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-        setRows(list);
-        setLoading(false);
-      },
-      (err) => {
-        console.error("dashboard bookings error", err);
-        toast({
-          title: "Could not load dashboard data",
-          description: String(err?.message || err),
-          variant: "destructive",
-        });
-        setLoading(false);
-      }
-    );
-
-    return () => unsub();
-  }, [authReady, isAdmin, toast]);
+  // This month + a week into next month, from the admin API (business-timezone date range).
+  const today = new Date();
+  const rangeFrom = tzDateKey(new Date(today.getFullYear(), today.getMonth(), 1));
+  const rangeTo = tzDateKey(new Date(today.getFullYear(), today.getMonth() + 1, 7));
+  const bookingsQ = useApiQuery(
+    async () =>
+      (await apiGet(`/admin/bookings${qs({ from: rangeFrom, to: rangeTo })}`)).bookings
+        .map(normalizeBooking)
+        .map((b) => ({ ...b, amount: b.totalPrice }))
+        .sort((x, y) => x.startAt - y.startAt),
+    [rangeFrom, rangeTo]
+  );
+  const rows = React.useMemo(() => (bookingsQ.data || []).filter((b) => b.status !== "expired"), [bookingsQ.data]);
+  const loading = bookingsQ.loading && !bookingsQ.data;
+  const attentionQ = useApiQuery(() => apiGet("/admin/system"), []);
 
   // ---- Analytics / derived views ----
   const analytics = React.useMemo(() => {
@@ -186,7 +149,7 @@ export default function DashboardHome({ onChangeView }) {
           statusCounts.set("declined", (statusCounts.get("declined") || 0) + 1);
       }
 
-      const dateKey = when.toISOString().slice(0, 10);
+      const dateKey = tzDateKey(when);
       const label = when.toLocaleDateString(undefined, {
         month: "short",
         day: "2-digit",
@@ -308,8 +271,26 @@ export default function DashboardHome({ onChangeView }) {
   const goToCalendar = () => onChangeView && onChangeView("calendar");
   const goToReports = () => onChangeView && onChangeView("reports");
 
+  const attention = attentionQ.data?.attention || [];
+
   return (
     <section className="space-y-6">
+      {(attention.length > 0 || attentionQ.data?.email?.failed?.length > 0) && (
+        <div className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900" role="alert">
+          <p className="font-semibold">Needs your attention</p>
+          <ul className="list-disc ml-5 text-xs mt-1 space-y-0.5">
+            {attention.slice(0, 5).map((b) => (
+              <li key={b.id}>
+                {b.contact?.name} · #{b.invoiceNumber}: {b.needsAttention}
+              </li>
+            ))}
+            {attentionQ.data?.email?.failed?.length > 0 && <li>{attentionQ.data.email.failed.length} email(s) failed to send</li>}
+          </ul>
+          <Button size="sm" variant="outline" className="mt-2 h-7 text-xs" onClick={() => onChangeView && onChangeView("maintenance")}>
+            Open system status
+          </Button>
+        </div>
+      )}
       {/* Quick actions */}
       <div className="flex flex-wrap items-center gap-3 mb-1">
         <Button

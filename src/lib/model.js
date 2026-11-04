@@ -105,3 +105,10 @@ export function dateKey(v) {
 
 export const ACTIVE_STATUSES = ["pending_payment", "pending", "confirmed"];
 export const isUpcoming = (b) => ACTIVE_STATUSES.includes(b.status) && toMillis(b.startAt) >= Date.now() - 3 * 3600 * 1000;
+
+/** HH:MM (24h) of a Date in the business timezone. */
+export function timeKey(v) {
+  const d = toDate(v);
+  if (!d) return "";
+  return new Intl.DateTimeFormat("en-GB", { timeZone: TZ, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(d);
+}

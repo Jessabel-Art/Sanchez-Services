@@ -33,7 +33,8 @@ const STATUS_COLORS = {
   confirmed: "bg-emerald-100 text-emerald-800",
   completed: "bg-purple-100 text-purple-800",
   cancelled: "bg-rose-100 text-rose-800",
-  cancelled: "bg-rose-100 text-rose-800",
+  pending_payment: "bg-amber-50 text-amber-700",
+  expired: "bg-slate-100 text-slate-600",
   declined: "bg-orange-100 text-orange-800",
   pending: "bg-amber-100 text-amber-800",
 };

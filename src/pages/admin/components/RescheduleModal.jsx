@@ -1,314 +1,131 @@
-// src/pages/admin/components/RescheduleModal.jsx
-import React, { useState, useEffect } from "react";
-import { Input } from "@/components/ui/input";
+// src/pages/admin/components/RescheduleModal.jsx — admin reschedule; the server re-runs the conflict check.
+import React, { useEffect, useState } from "react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { useToast } from "@/components/ui/use-toast";
-import { db } from "@/lib/firebase";
-import { updateBooking } from "@/lib/db";
-import {
-  Timestamp,
-  addDoc,
-  collection,
-  serverTimestamp,
-} from "firebase/firestore";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-} from "@/components/ui/dialog";
+import { apiGet, apiPost } from "@/lib/api";
+import { useApiQuery } from "@/hooks/useApiQuery";
+import { dateKey, timeKey, fmtDateTime } from "@/lib/model";
 
-// Admin email for notifications (update with your actual email or env var)
-const ADMIN_NOTIFY_EMAIL = import.meta.env.VITE_ADMIN_EMAIL || "sanchezservices24@yahoo.com";
-
-/* ---------- date/time helpers ---------- */
-function toDate(tsLike) {
-  if (!tsLike) return null;
-  if (typeof tsLike.toDate === "function") return tsLike.toDate();
-  return new Date(tsLike);
-}
-
-function toDateInputValue(d) {
-  if (!d) return "";
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-function toTimeInputValue(d) {
-  if (!d) return "";
-  const h = String(d.getHours()).padStart(2, "0");
-  const min = String(d.getMinutes()).padStart(2, "0");
-  return `${h}:${min}`;
-}
-
-function formatDate(d) {
-  if (!d) return "TBD";
-  return d.toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
-}
-
-function formatTime(d) {
-  if (!d) return "";
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
-
-function formatDateKey(d) {
-  if (!d) return "";
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-/* ---------- component ---------- */
-export function RescheduleModal({ open, booking, onClose }) {
+/** Props: open, booking (normalized), initialDate/initialTime (optional, e.g. from drag-drop), onClose, onSaved(booking). */
+export function RescheduleModal({ open, booking, initialDate, initialTime, onClose, onSaved }) {
   const { toast } = useToast();
-  const [saving, setSaving] = useState(false);
+  const [date, setDate] = useState("");
+  const [time, setTime] = useState("");
+  const [duration, setDuration] = useState("");
+  const [notify, setNotify] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
 
-  // Form state
-  const [newDate, setNewDate] = useState("");
-  const [newTime, setNewTime] = useState("");
-
-  // Reset form when modal opens or booking changes
   useEffect(() => {
-    if (!open || !booking) {
-      setNewDate("");
-      setNewTime("");
-      return;
+    if (open && booking) {
+      setDate(initialDate || dateKey(booking.startAt));
+      setTime(initialTime || timeKey(booking.startAt));
+      setDuration(String(booking.durationMinutes || 120));
+      setNotify(true);
+      setError("");
     }
+  }, [open, booking, initialDate, initialTime]);
 
-    // Pre-populate new date/time with current booking time as starting point
-    const current = toDate(booking.startAt || booking.scheduledAt);
-    if (current) {
-      setNewDate(toDateInputValue(current));
-      setNewTime(toTimeInputValue(current));
-    }
-  }, [open, booking]);
+  const valid = /^\d{4}-\d{2}-\d{2}$/.test(date);
+  const availQ = useApiQuery(
+    () => apiGet(`/availability?date=${date}&durationMinutes=${Number(duration) || 120}&booking=${encodeURIComponent(booking.id)}`),
+    [date, duration, booking?.id],
+    { enabled: !!(open && booking && valid), poll: false }
+  );
 
   if (!booking) return null;
 
-  // Read-only display values
-  const clientName = booking.contact?.name || booking.clientName || booking.name || "Client";
-  const clientEmail = booking.contact?.email || booking.email || "";
-  const clientPhone = booking.contact?.phone || booking.phone || "";
-  const serviceName = booking.serviceName || booking.service || "Service";
-  const address = booking.address?.line1 || booking.address || "";
-  const durationMinutes = booking.durationMinutes || 120;
-
-  // Current booking time
-  const currentStart = toDate(booking.startAt || booking.scheduledAt);
-  const currentEnd = new Date(currentStart.getTime() + durationMinutes * 60 * 1000);
-
-  // New booking time (computed from form inputs)
-  let newStart = null;
-  let newEnd = null;
-  if (newDate && newTime) {
-    const [hours, mins] = newTime.split(":").map(Number);
-    newStart = new Date(newDate);
-    newStart.setHours(hours || 0, mins || 0, 0, 0);
-    newEnd = new Date(newStart.getTime() + durationMinutes * 60 * 1000);
-  }
-
-  const handleSaveReschedule = async () => {
-    if (!newStart || !newEnd) {
-      toast({
-        title: "Invalid date/time",
-        description: "Please select a valid date and time.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    setSaving(true);
+  const save = async () => {
+    setBusy(true);
+    setError("");
     try {
-      // Update the booking doc
-      await updateBooking(booking.id, {
-        startAt: Timestamp.fromDate(newStart),
-        scheduledAt: Timestamp.fromDate(newStart), // keep compatibility
-        endAt: Timestamp.fromDate(newEnd),
-        dateKey: formatDateKey(newStart),
-        updatedAt: serverTimestamp(),
-        updatedBy: "admin",
-        rescheduledAt: serverTimestamp(),
-        rescheduleMeta: {
-          previousStartAt: booking.startAt,
-          previousEndAt: booking.endAt,
-        },
+      const res = await apiPost(`/admin/bookings/${encodeURIComponent(booking.id)}/reschedule`, {
+        date,
+        time,
+        durationMinutes: Number(duration) || undefined,
+        notifyClient: notify,
       });
-
-      // Queue email to client
-      if (clientEmail) {
-        try {
-          await addDoc(collection(db, "mail"), {
-            to: [clientEmail],
-            replyTo: ADMIN_NOTIFY_EMAIL,
-            message: {
-              subject: "Your Sanchez Services booking has been rescheduled",
-              text: `Hi ${clientName},\n\nYour booking has been rescheduled!\n\nService: ${serviceName}\nNew Date: ${formatDate(newStart)}\nNew Time: ${formatTime(newStart)} – ${formatTime(newEnd)}\nAddress: ${address}\nBooking ID: ${booking.id}\n\nThank you for choosing Sanchez Services!`,
-            },
-            createdAt: serverTimestamp(),
-            meta: {
-              type: "rescheduled",
-              bookingId: booking.id,
-              oldStartAt: booking.startAt,
-              newStartAt: newStart,
-            },
-          });
-        } catch (emailErr) {
-          console.error("[RescheduleModal] Failed to queue client email:", emailErr);
-          // Don't fail the reschedule if email fails
-        }
-      }
-
-      // Queue email to admin (if email is different from client)
-      if (ADMIN_NOTIFY_EMAIL && ADMIN_NOTIFY_EMAIL !== clientEmail) {
-        try {
-          await addDoc(collection(db, "mail"), {
-            to: [ADMIN_NOTIFY_EMAIL],
-            message: {
-              subject: `Booking rescheduled: ${clientName}`,
-              text: `Admin notification:\n\nBooking rescheduled\n\nClient: ${clientName}\nService: ${serviceName}\nOld Date: ${formatDate(currentStart)} ${formatTime(currentStart)}\nNew Date: ${formatDate(newStart)} ${formatTime(newStart)}\nAddress: ${address}\nBooking ID: ${booking.id}`,
-            },
-            createdAt: serverTimestamp(),
-            meta: {
-              type: "rescheduled",
-              bookingId: booking.id,
-              adminNotification: true,
-            },
-          });
-        } catch (emailErr) {
-          console.error("[RescheduleModal] Failed to queue admin email:", emailErr);
-        }
-      }
-
-      toast({
-        title: "Booking rescheduled",
-        description: `Successfully rescheduled to ${formatDate(newStart)} at ${formatTime(newStart)}.`,
-      });
-
+      toast({ title: "Booking rescheduled", description: fmtDateTime(res.booking.startAt) });
+      onSaved?.(res.booking);
       onClose();
-    } catch (err) {
-      console.error("[RescheduleModal] Update failed:", err);
-      toast({
-        title: "Could not reschedule",
-        description: err.message || "Check Firestore permissions.",
-        variant: "destructive",
-      });
+    } catch (e) {
+      setError(e.message);
     } finally {
-      setSaving(false);
+      setBusy(false);
     }
   };
 
   return (
     <Dialog open={open} onOpenChange={(isOpen) => !isOpen && onClose()}>
-      <DialogContent className="max-w-md rounded-lg bg-white">
+      <DialogContent className="sm:max-w-md bg-white text-plum">
         <DialogHeader>
-          <DialogTitle>Reschedule Booking</DialogTitle>
+          <DialogTitle>Reschedule booking</DialogTitle>
+          <DialogDescription>
+            {booking.clientName} · {booking.serviceName} · currently {fmtDateTime(booking.startAt)}
+          </DialogDescription>
         </DialogHeader>
-
-        <div className="space-y-4">
-          {/* Read-only client info */}
-          <div className="grid grid-cols-2 gap-3 text-sm">
-            <div>
-              <p className="text-xs text-gray-500 font-semibold uppercase">Client</p>
-              <p className="text-plum font-medium">{clientName}</p>
-            </div>
-            {clientEmail && (
-              <div>
-                <p className="text-xs text-gray-500 font-semibold uppercase">Email</p>
-                <p className="text-sm text-plum">{clientEmail}</p>
-              </div>
-            )}
-            {clientPhone && (
-              <div>
-                <p className="text-xs text-gray-500 font-semibold uppercase">Phone</p>
-                <p className="text-sm text-plum">{clientPhone}</p>
-              </div>
-            )}
-            <div>
-              <p className="text-xs text-gray-500 font-semibold uppercase">Service</p>
-              <p className="text-sm text-plum">{serviceName}</p>
-            </div>
+        <div className="space-y-3">
+          <div className="grid grid-cols-3 gap-2">
+            <label className="text-xs font-medium col-span-3 sm:col-span-1">
+              Date
+              <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="mt-1" />
+            </label>
+            <label className="text-xs font-medium">
+              Start
+              <Input type="time" step="900" value={time} onChange={(e) => setTime(e.target.value)} className="mt-1" />
+            </label>
+            <label className="text-xs font-medium">
+              Minutes
+              <Input type="number" min="30" step="15" value={duration} onChange={(e) => setDuration(e.target.value)} className="mt-1" />
+            </label>
           </div>
-
-          {/* Address */}
-          {address && (
-            <div className="border-t pt-3">
-              <p className="text-xs text-gray-500 font-semibold uppercase">Address</p>
-              <p className="text-sm text-plum">{address}</p>
+          {valid && (
+            <div className="text-xs">
+              {availQ.loading && !availQ.data ? (
+                <span className="text-plum/60">Checking availability…</span>
+              ) : availQ.data?.reason ? (
+                <span className="text-rose-700">Day unavailable: {availQ.data.reason}</span>
+              ) : (
+                <div className="flex flex-wrap gap-1">
+                  {(availQ.data?.slots || []).map((s) => (
+                    <button
+                      key={s.time}
+                      type="button"
+                      disabled={!s.available}
+                      onClick={() => setTime(s.time)}
+                      className={`px-2 py-0.5 rounded-full border ${
+                        time === s.time ? "bg-plum text-white border-plum" : s.available ? "border-emerald-300 text-emerald-800" : "border-slate-200 text-slate-400 line-through"
+                      }`}
+                    >
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           )}
-
-          {/* Current date/time (read-only) */}
-          <div className="border-t pt-3">
-            <p className="text-xs text-gray-500 font-semibold uppercase mb-2">Current Date/Time</p>
-            <div className="text-sm bg-gray-50 p-2 rounded border">
-              <p className="text-plum">
-                {formatDate(currentStart)} at {formatTime(currentStart)} – {formatTime(currentEnd)}
-              </p>
-              <p className="text-xs text-gray-500">{durationMinutes} min duration</p>
-            </div>
-          </div>
-
-          {/* New date/time inputs */}
-          <div className="border-t pt-3">
-            <p className="text-xs text-gray-500 font-semibold uppercase mb-2">New Date/Time</p>
-            <div className="flex gap-2">
-              <div className="flex-1">
-                <Input
-                  type="date"
-                  value={newDate}
-                  onChange={(e) => setNewDate(e.target.value)}
-                  className="text-sm"
-                  disabled={saving}
-                />
-              </div>
-              <div className="flex-shrink-0 w-20">
-                <Input
-                  type="time"
-                  value={newTime}
-                  onChange={(e) => setNewTime(e.target.value)}
-                  className="text-sm"
-                  disabled={saving}
-                />
-              </div>
-            </div>
-          </div>
-
-          {/* Preview of new time */}
-          {newStart && (
-            <div className="bg-blue-50 border border-blue-200 rounded p-2 text-sm">
-              <p className="text-blue-900 font-medium">
-                {formatDate(newStart)} at {formatTime(newStart)} – {formatTime(newEnd)}
-              </p>
-            </div>
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={notify} onChange={(e) => setNotify(e.target.checked)} /> Email the client about the change
+          </label>
+          {error && (
+            <p className="text-sm text-rose-700" role="alert">
+              {error}
+            </p>
           )}
         </div>
-
-        <DialogFooter className="mt-4">
-          <Button
-            variant="outline"
-            onClick={onClose}
-            disabled={saving}
-            className="mr-2"
-          >
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
             Cancel
           </Button>
-          <Button
-            onClick={handleSaveReschedule}
-            disabled={saving || !newStart}
-            className="bg-plum text-white hover:bg-plum/90"
-          >
-            {saving ? "Saving..." : "Save Reschedule"}
+          <Button onClick={save} disabled={busy || !valid || !time} className="bg-[#E2A82B] text-[#431039] hover:bg-[#F0BA3E]">
+            {busy ? "Saving…" : "Reschedule"}
           </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
   );
 }
+
+export default RescheduleModal;
