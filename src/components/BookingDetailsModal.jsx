@@ -52,7 +52,7 @@ export function BookingDetailsModal({ open, booking, onClose }) {
   if (!booking) return null;
 
   const b = booking;
-  const orderCode = `CI-${(b.id || "").slice(0, 5).toUpperCase()}`;
+  const orderCode = (b.invoiceNumber || b.id || "");
 
   const propertyType = getBookingField(b, ["propertyType", "homeType"]);
   const bedrooms = getBookingField(b, ["bedrooms", "numBedrooms"], "—");

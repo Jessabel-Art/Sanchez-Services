@@ -15,11 +15,8 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/components/ui/use-toast';
-import { updateProfile } from 'firebase/auth';
 import { useAuth } from '@/context/AuthContext';
 
-// ✅ profile helpers
-import { updateProfileLastLogin, updateProfileContact } from "@/lib/profileModel";
 
 export default function AuthPage() {
   const { toast } = useToast();
@@ -54,17 +51,7 @@ export default function AuthPage() {
     setLoading(true);
 
     try {
-      const cred = await signIn(loginEmail.trim(), loginPassword);
-
-      // ✅ keep profile in sync + last login
-      try {
-        await updateProfileContact(cred.user.uid, {
-          email: cred.user.email || loginEmail.trim(),
-        });
-        await updateProfileLastLogin(cred.user);
-      } catch (profileErr) {
-        console.error('Failed to sync profile on login:', profileErr);
-      }
+      await signIn(loginEmail.trim(), loginPassword);
 
       toast({
         title: 'Welcome back!',
@@ -91,26 +78,11 @@ export default function AuthPage() {
     const trimmedEmail = signEmail.trim();
 
     try {
-      const cred = await signUp(trimmedEmail, signPassword);
-
-      if (trimmedName) {
-        await updateProfile(cred.user, { displayName: trimmedName });
-      }
-
-      // ✅ create/merge profile on signup
-      try {
-        await updateProfileContact(cred.user.uid, {
-          name: trimmedName || cred.user.displayName || '',
-          email: trimmedEmail,
-        });
-        await updateProfileLastLogin(cred.user);
-      } catch (profileErr) {
-        console.error('Failed to create/sync profile on signup:', profileErr);
-      }
+      await signUp(trimmedEmail, signPassword, trimmedName);
 
       toast({
         title: 'Account created!',
-        description: 'You are now signed in.',
+        description: 'We sent you an email to confirm your address.',
       });
       navigate(redirectTo, { replace: true });
     } catch (err) {
@@ -351,6 +323,10 @@ function humanizeAuthError(err) {
       return 'That email is already registered.';
     case 'weak-password':
       return 'Password should be at least 6 characters.';
+    case 'too-many-requests':
+      return 'Too many attempts. Please wait a few minutes or reset your password.';
+    case 'password-reset-required':
+      return 'Please use "Forgot password?" to set a new password for your account.';
     default:
       return err?.message || 'Something went wrong.';
   }

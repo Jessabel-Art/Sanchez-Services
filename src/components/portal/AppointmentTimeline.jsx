@@ -280,11 +280,7 @@ export default function AppointmentTimeline({ booking, title }) {
         {serviceName && (
           <p className="text-xs text-plum/70 mt-1">
             {serviceName} ·{" "}
-            {booking.id
-              ? `Order CI-${String(booking.id)
-                  .slice(0, 5)
-                  .toUpperCase()}`
-              : null}
+            {booking.invoiceNumber ? `Booking #${booking.invoiceNumber}` : null}
           </p>
         )}
       </CardHeader>

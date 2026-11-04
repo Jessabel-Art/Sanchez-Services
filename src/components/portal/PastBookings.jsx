@@ -144,7 +144,7 @@ export default function PastBookings({
     if (!activeBooking) return null;
 
     const b = activeBooking;
-    const orderCode = `CI-${(b.id || "").slice(0, 5).toUpperCase()}`;
+    const orderCode = (b.invoiceNumber || b.id || "");
 
     const startDate = toDate(b.startAt || b.date);
     const endDate = toDate(b.endAt);
@@ -456,20 +456,11 @@ export default function PastBookings({
                   : bookings.length
                   ? bookings.map((b, idx) => {
                       const end = toDate(b.endAt);
-                      const canReview = typeof onReview === "function";
+                      const canReview = typeof onReview === "function" && !!b.permissions?.canReview;
 
-                      let displayStatus =
-                        b.friendly || b.rawStatus || "Pending";
-                      if (
-                        end &&
-                        end < now &&
-                        (displayStatus === "Confirmed" ||
-                          displayStatus === "Scheduled")
-                      ) {
-                        displayStatus = "Completed";
-                      }
+                      const displayStatus = b.friendly || b.rawStatus || "Pending";
 
-                      const orderCode = `CI-${b.id.slice(0, 5).toUpperCase()}`;
+                      const orderCode = b.invoiceNumber || b.id;
                       const hasRating =
                         b.reviewRating !== undefined &&
                         b.reviewRating !== null &&
@@ -532,7 +523,7 @@ export default function PastBookings({
                                 </span>
                                 <span className="text-[10px] text-plum/50">
                                   Your feedback
-                                  {canReview ? " (tap to edit)" : ""}
+                                  {b.review?.status === "pending" ? " (awaiting approval)" : ""}
                                 </span>
                               </button>
                             ) : canReview ? (
@@ -581,20 +572,11 @@ export default function PastBookings({
             ) : bookings.length ? (
               bookings.map((b) => {
                 const end = toDate(b.endAt);
-                const canReview = typeof onReview === "function";
+                const canReview = typeof onReview === "function" && !!b.permissions?.canReview;
 
-                let displayStatus =
-                  b.friendly || b.rawStatus || "Pending";
-                if (
-                  end &&
-                  end < now &&
-                  (displayStatus === "Confirmed" ||
-                    displayStatus === "Scheduled")
-                ) {
-                  displayStatus = "Completed";
-                }
+                const displayStatus = b.friendly || b.rawStatus || "Pending";
 
-                const orderCode = `CI-${b.id.slice(0, 5).toUpperCase()}`;
+                const orderCode = b.invoiceNumber || b.id;
                 const hasRating =
                   b.reviewRating !== undefined &&
                   b.reviewRating !== null &&
@@ -649,7 +631,7 @@ export default function PastBookings({
                           </span>
                           <span className="text-[10px] text-plum/50">
                             Your feedback
-                            {canReview ? " (tap to edit)" : ""}
+                            {b.review?.status === "pending" ? " (awaiting approval)" : ""}
                           </span>
                         </button>
                       ) : canReview ? (

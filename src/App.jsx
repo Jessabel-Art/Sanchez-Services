@@ -22,6 +22,7 @@ import AdminDashboard from '@/pages/admin/AdminDashboard';
 import ClientBookingsView from '@/pages/admin/ClientBookingsView';
 import AuthPage from '@/pages/AuthPage';
 import ResetPasswordPage from '@/pages/ResetPasswordPage';
+import VerifyEmailPage from '@/pages/VerifyEmailPage';
 import ClientPortalPage from '@/pages/ClientPortalPage.jsx';
 import PaymentCenterPage from "@/pages/PaymentCenterPage";
 import PaymentConfirmationPage from "@/pages/PaymentConfirmationPage";
@@ -89,6 +90,7 @@ function AppShell() {
           <Route path="/confirm" element={<ConfirmationPage />} />
           <Route path="/auth" element={<AuthPage />} />
           <Route path="/auth/reset" element={<ResetPasswordPage />} />
+          <Route path="/auth/verify" element={<VerifyEmailPage />} />
 
           {/* Client portal now uses ClientPortalPage */}
           <Route

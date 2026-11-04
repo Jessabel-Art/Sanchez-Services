@@ -14,7 +14,6 @@ import {
   CreditCard,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { calculateGrossFromNet } from "@/lib/payments";
 
 const PaymentInstructions = ({ paymentInfo, onStripePay }) => {
   const P = paymentInfo || {};
@@ -26,7 +25,8 @@ const PaymentInstructions = ({ paymentInfo, onStripePay }) => {
 
   const depositAmount = Number.isFinite(rawDeposit) ? rawDeposit : 50;
   const stripeEnabled = !!P.stripeEnabled;
-  const depositCardCharge = calculateGrossFromNet(depositAmount);
+  // Card fee estimate comes from the server (same math as checkout).
+  const depositCardCharge = P.depositCardCharge || { estimatedFee: 0, grossAmount: depositAmount };
 
   const hasDeposit = depositAmount > 0 && !isRepeatClient;
 

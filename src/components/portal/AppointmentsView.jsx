@@ -53,7 +53,7 @@ function generateAppointmentPrintView(booking) {
   const win = window.open("", "_blank");
   if (!win) return;
 
-  const orderCode = `CI-${(booking.id || "").slice(0, 5).toUpperCase()}`;
+  const orderCode = (booking.invoiceNumber || booking.id || "");
 
   const start = toDate(booking.startAt || booking.date);
   const end = toDate(booking.endAt);

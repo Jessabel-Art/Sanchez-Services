@@ -1750,7 +1750,7 @@ export default function CalendarView() {
             const base = selectedEvent.resource || {};
             const b = { id: selectedEvent.id, ...base };
 
-            const orderCode = `CI-${(b.id || "").slice(0, 5).toUpperCase()}`;
+            const orderCode = (b.invoiceNumber || b.id || "");
 
             const propertyType = getBookingField(b, [
               "propertyType",

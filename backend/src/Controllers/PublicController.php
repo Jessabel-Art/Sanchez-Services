@@ -35,6 +35,9 @@ final class PublicController
                 'bookingHorizonDays' => $c->int('business.booking_horizon_days', 120),
                 'holdMinutes' => max(30, $c->int('business.hold_minutes', 30)),
                 'cardFeePassedToCustomer' => $c->bool('business.pass_card_fee_to_customer', true),
+                'depositCardCharge' => $c->bool('business.pass_card_fee_to_customer', true)
+                    ? \SanchezServices\Domain\PaymentMath::grossFromNet($c->float('business.required_deposit_amount', 50))
+                    : ['estimatedFee' => 0.0, 'grossAmount' => $c->float('business.required_deposit_amount', 50)],
                 'slots' => $c->get('business.slots'),
             ],
         ]);

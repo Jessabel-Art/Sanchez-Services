@@ -36,35 +36,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-// Firebase
-import {
-  updateProfile,
-  updateEmail,
-} from "firebase/auth";
-import { db, functions } from "@/lib/firebase";
-import { httpsCallable } from "firebase/functions";
 import { useAuth } from "@/context/AuthContext";
-import { normalizeAddress } from '@/lib/contactModel';
-import {
-  collection,
-  onSnapshot,
-  query,
-  where,
-  addDoc,
-  serverTimestamp,
-  updateDoc,
-  doc,
-  orderBy,
-  deleteDoc,
-  getDocs,
-  getDoc,
-  limit,
-} from "firebase/firestore";
-
-// Firestore helpers
-import { getAddress, updateBooking } from "@/lib/db";
-import { updateProfileContact, updateProfileAddress, upsertProfile } from "@/lib/profileModel";
-
+import { apiGet, apiPost, apiPatch, apiDelete, onApiWrite, getPollIntervalMs } from "@/lib/api";
+import { normalizeBooking, statusLabel, isUpcoming, toMillis, toDate } from "@/lib/model";
+import { OFFLINE_PAYMENT } from "@/data/paymentMethods";
+import { buildInvoiceHtml } from "@/lib/payments";
 // Portal components
 import ClientDashboardHome from "@/components/portal/ClientDashboardHome";
 import AppointmentsView from "@/components/portal/AppointmentsView";
@@ -72,13 +48,7 @@ import ProfileSettingsPanel from "@/components/portal/ProfileSettingsPanel";
 import PaymentCenterPage from "@/pages/PaymentCenterPage";
 
 /* -------------------- Config -------------------- */
-const PAYMENT_INFO = {
-  depositAmount: 50,
-  cash: true,
-  cashApp: "Sterlingsterls",
-  zelle: "401-658-6708, use my name Sterling Sanchez in Zelle",
-  notes: "Please include your full name in the payment note.",
-};
+const PAYMENT_INFO = { depositAmount: 50, cash: OFFLINE_PAYMENT.cash, cashApp: OFFLINE_PAYMENT.cashApp, zelle: OFFLINE_PAYMENT.zelle, notes: OFFLINE_PAYMENT.note };
 
 const US_STATES = [
   "AL",
@@ -332,6 +302,7 @@ export default function ClientPortalPage() {
     signUp,
     signOut,
     resetPassword,
+    changeEmail,
   } = useAuth();
 
   /* --------------- Auth UI state --------------- */
@@ -389,585 +360,150 @@ export default function ClientPortalPage() {
   const [reviewRating, setReviewRating] = useState(5);
   const [reviewDisplayMode, setReviewDisplayMode] = useState("initials");
 
-  // live listener cleanup
-  const unsubsRef = useRef([]);
-
-  /* --------------- AuthContext-driven data subscriptions --------------- */
-  useEffect(() => {
-    unsubsRef.current.forEach((unsubscribe) => {
-      try {
-        unsubscribe();
-      } catch {}
-    });
-    unsubsRef.current = [];
-
-    if (!authReady) return undefined;
-
-    if (!user) {
-        setBookings([]);
-        setAddresses([]);
-        setContactProfile({ name: "", phone: "" });
-        setEmailEdit("");
-        setAuthTab("login");
-        setLoadingInitial(false);
-        setSection("dashboard");
-        return undefined;
-    }
-
-    const attachSubscriptions = async () => {
-      setLoadingBookings(true);
+  /* --------------- Data (API) --------------- */
+  const loadAll = React.useCallback(async () => {
+    if (!user) return;
+    try {
+      const [{ bookings: rows }, { profile }, { addresses: addrs }] = await Promise.all([
+        apiGet("/me/bookings"),
+        apiGet("/me/profile"),
+        apiGet("/me/addresses"),
+      ]);
+      setBookings(rows.map(normalizeBooking));
+      setContactProfile({ name: profile.name || "", phone: profile.phone || "" });
+      setPreferences(profile.preferences || null);
+      setPreferredContactMethod(profile.preferredContactMethod || null);
+      setEmailEdit(profile.email || user.email || "");
+      setAddresses(addrs.map((a) => ({ ...a, type: a.label || "home", street: a.line1, nickname: a.label })));
+      setErrorMsg("");
+    } catch (e) {
+      setErrorMsg(e.message);
+    } finally {
+      setLoadingBookings(false);
       setLoadingInitial(false);
+    }
+  }, [user]);
 
-      try {
-        // ensure profile exists / merge basics (canonical field: `name`)
-        await updateProfileContact(user.uid, {
-          email: user.email || "",
-          phone: user.phoneNumber || "",
-          name: user.displayName || signupName || "",
-        });
-
-        // read profile
-        let profileData = {};
-        try {
-          const profileSnap = await getDoc(doc(db, "profiles", user.uid));
-          if (profileSnap.exists()) {
-            profileData = profileSnap.data() || {};
-          }
-        } catch (e) {
-          console.error("Could not load profile", e);
-        }
-
-        const nameFromProfile =
-          profileData.name || user.displayName || signupName || "";
-        const phoneFromProfile = profileData.phone || user.phoneNumber || "";
-
-        setContactProfile({
-          name: nameFromProfile,
-          phone: phoneFromProfile,
-        });
-
-        setPreferences(profileData.preferences || null);
-        setPreferredContactMethod(
-          profileData.preferredContactMethod || null
-        );
-
-        setEmailEdit(profileData.email || user.email || "");
-
-        // migrate legacy single address -> subcollection
-        try {
-          const legacy = await getAddress(user.uid);
-          if (legacy) {
-            const sub = collection(db, "profiles", user.uid, "addresses");
-            const existing = await getDocs(query(sub, limit(1)));
-            if (existing.empty) {
-              await addDoc(sub, {
-                type: "home",
-                street: legacy.street || legacy.line1 || "",
-                city: legacy.city || "",
-                state: legacy.state || "",
-                zip: legacy.zip || "",
-                isDefault: true,
-                createdAt: serverTimestamp(),
-                updatedAt: serverTimestamp(),
-              });
-            }
-          }
-        } catch {}
-
-        const userId = user.uid;
-        const emailLower = (user.email || "").toLowerCase();
-
-        // Attach listeners conditionally to avoid permission errors.
-        const emailListenerAttached = { current: false };
-        const phoneListenerAttached = { current: false };
-        const ownerListenerAttached = { current: false };
-
-        const attachOwnerListener = () => {
-          if (ownerListenerAttached.current) return;
-          ownerListenerAttached.current = true;
-          const qByOwnerKey = query(
-            collection(db, "bookings"),
-            where("ownerKeys", "array-contains", `uid:${userId}`),
-            orderBy("startAt", "desc"),
-            limit(QUERY_LIMIT)
-          );
-          const unsub = onSnapshot(
-            qByOwnerKey,
-            (snap) => {
-              const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-              setBookings((prev) => dedupeById([...prev, ...rows]));
-              setLoadingBookings(false);
-            },
-            (err) => {
-              console.error(err);
-              setLoadingBookings(false);
-            }
-          );
-          unsubsRef.current.push(unsub);
-        };
-
-        const attachEmailListener = () => {
-          if (emailListenerAttached.current || !emailLower) return;
-          emailListenerAttached.current = true;
-          const qByEmailTop = query(
-            collection(db, "bookings"),
-            where("contactEmailLower", "==", emailLower),
-            orderBy("startAt", "desc"),
-            limit(QUERY_LIMIT)
-          );
-          const qByEmailLegacy = query(
-            collection(db, "bookings"),
-            where("contact.emailLower", "==", emailLower),
-            orderBy("startAt", "desc"),
-            limit(QUERY_LIMIT)
-          );
-
-          const unsubTop = onSnapshot(
-            qByEmailTop,
-            (snap) => {
-              const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-              setBookings((prev) => dedupeById([...prev, ...rows]));
-              setLoadingBookings(false);
-
-              // If email listener also finds nothing, fall back to ownerKeys
-              if (snap.empty && !ownerListenerAttached.current) {
-                attachOwnerListener();
-              }
-            },
-            (err) => {
-              console.error(err);
-              setLoadingBookings(false);
-            }
-          );
-
-          const unsubLegacy = onSnapshot(
-            qByEmailLegacy,
-            (snap) => {
-              const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-              setBookings((prev) => dedupeById([...prev, ...rows]));
-              setLoadingBookings(false);
-            },
-            (err) => {
-              console.error(err);
-              setLoadingBookings(false);
-            }
-          );
-
-          unsubsRef.current.push(unsubTop, unsubLegacy);
-        };
-
-        const attachPhoneListener = (normalizedPhone, rawPhoneString) => {
-          if (phoneListenerAttached.current || !normalizedPhone) return;
-          phoneListenerAttached.current = true;
-
-          // Top-level normalized field
-          const qByPhoneTop = query(
-            collection(db, "bookings"),
-            where("contactPhoneNormalized", "==", normalizedPhone),
-            orderBy("startAt", "desc"),
-            limit(QUERY_LIMIT)
-          );
-
-          // Legacy: contact.phoneNormalized
-          const qByPhoneNormLegacy = query(
-            collection(db, "bookings"),
-            where("contact.phoneNormalized", "==", normalizedPhone),
-            orderBy("startAt", "desc"),
-            limit(QUERY_LIMIT)
-          );
-
-          // Legacy: contact.phone (digits only)
-          const qByPhoneDigits = query(
-            collection(db, "bookings"),
-            where("contact.phone", "==", normalizedPhone),
-            orderBy("startAt", "desc"),
-            limit(QUERY_LIMIT)
-          );
-
-          // Legacy: contact.phoneRaw (may be formatted; try exact match)
-          const qByPhoneRaw = rawPhoneString ? query(
-            collection(db, "bookings"),
-            where("contact.phoneRaw", "==", rawPhoneString),
-            orderBy("startAt", "desc"),
-            limit(QUERY_LIMIT)
-          ) : null;
-
-          const unsubs = [];
-
-          [qByPhoneTop, qByPhoneNormLegacy, qByPhoneDigits, qByPhoneRaw]
-            .filter(Boolean)
-            .forEach(q => {
-              unsubs.push(onSnapshot(
-                q,
-                (snap) => {
-                  const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-                  setBookings((prev) => dedupeById([...prev, ...rows]));
-                  setLoadingBookings(false);
-                },
-                (err) => {
-                  console.error(err);
-                  setLoadingBookings(false);
-                }
-              ));
-            });
-
-          unsubsRef.current.push(...unsubs);
-        };
-
-        // 1) Primary listener by userId (always attach)
-        const qByUidStart = query(
-          collection(db, "bookings"),
-          where("userId", "==", userId),
-          orderBy("startAt", "desc"),
-          limit(QUERY_LIMIT)
-        );
-        const u1 = onSnapshot(
-          qByUidStart,
-          (snap) => {
-            const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-            setBookings((prev) => dedupeById([...prev, ...rows]));
-            setLoadingBookings(false);
-
-            // If primary returned nothing, try email-based listener
-            if (snap.empty && !emailListenerAttached.current) {
-              attachEmailListener();
-            }
-            // Also attach phone-based listener using profile phone
-            const raw = phoneFromProfile || "";
-            const np = (() => {
-              const digits = String(raw).replace(/\D+/g, "");
-              if (digits.length === 11 && digits.startsWith("1")) return digits.slice(1);
-              return digits;
-            })();
-            if (np) attachPhoneListener(np, raw);
-          },
-          (err) => {
-            console.error(err);
-            setLoadingBookings(false);
-          }
-        );
-        unsubsRef.current.push(u1);
-
-        // addresses listener
-        const uAddr = onSnapshot(
-          query(
-            collection(db, "profiles", user.uid, "addresses"),
-            orderBy("createdAt", "desc")
-          ),
-          (snap) => {
-            setAddresses(
-              snap.docs.map((d) => ({ id: d.id, ...d.data() }))
-            );
-          },
-          (err) => {
-            console.error("Address listener error", err);
-          }
-        );
-        unsubsRef.current.push(uAddr);
-      } catch (err) {
-        console.error(err);
-        setLoadingBookings(false);
-        setErrorMsg(err?.message || String(err));
-      }
-    };
-
-    void attachSubscriptions();
-
+  useEffect(() => {
+    if (!authReady) return undefined;
+    if (!user) {
+      setLoadingInitial(false);
+      return undefined;
+    }
+    setLoadingBookings(true);
+    loadAll();
+    const unsub = onApiWrite(() => loadAll());
+    const timer = setInterval(() => document.visibilityState !== "hidden" && loadAll(), getPollIntervalMs());
+    const onVisible = () => document.visibilityState === "visible" && loadAll();
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
-      unsubsRef.current.forEach((u) => {
-        try {
-          u();
-        } catch {}
-      });
-      unsubsRef.current = [];
+      unsub();
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [authReady, user]);
+  }, [authReady, user, loadAll]);
 
-  /* --------------- Derived bookings --------------- */
-const bookingsWithFriendly = useMemo(() => {
-  const mapped = bookings.map((r) => {
-    // Normalize core dates
-    const date =
-      r.startAt ?? r.date ?? r.scheduledAt ?? null;
-    const endAt = r.endAt ?? null;
-    const createdAt = r.createdAt ?? null;
+  /* --------------- Derived bookings (server is the source of truth) --------------- */
+  const bookingsWithFriendly = useMemo(
+    () =>
+      bookings.map((b) => ({
+        ...b,
+        id: b.id,
+        date: b.startAt,
+        endAt: b.endAt,
+        total: b.totalPrice,
+        paid: b.amountPaid,
+        rawStatus: b.status,
+        friendly: statusLabel(b.status),
+        service: b.serviceName,
+        addressLine: b.address?.line1 || "",
+        addressZip: b.address?.zip || "",
+        notes: [b.accessNotes, b.cleanerNotes].filter(Boolean).join("\n"),
+        frequency: b.frequency || "one-time",
+        addons: b.addons || [],
+        depositAmount: b.depositAmount,
+        depositPaid: b.depositPaid,
+        depositDue: b.depositDue,
+        depositReceived: b.depositPaid,
+        reviewRating: b.review?.rating ?? null,
+        payment: { totalPrice: b.totalPrice, paidAmount: b.amountPaid, depositAmount: b.depositAmount, depositPaid: b.depositPaid },
+      })),
+    [bookings]
+  );
 
-    // Normalize totals
-    const total = Number(
-      r.totalPrice ??
-        r.payment?.totalPrice ??
-        r.totalAmount ??
-        r.payment?.totalAmount ??
-        r.total ??
-        r.payment?.total ??
-        r.cost ??
-        r.amount ??
-        r.estimate?.total ??
-        0
-    );
-
-    const paid = Number(
-      r.paidAmount ??
-        r.payment?.paidAmount ??
-        r.amountPaid ??
-        r.payment?.amountPaid ??
-        r.paid ??
-        0
-    );
-
-    // Normalize deposit fields (from admin edits OR legacy)
-    const depositAmount = Number(
-      r.depositAmount ??
-        r.payment?.depositAmount ??
-        r.depositDue ??
-        0
-    );
-
-    const depositPaid = Boolean(
-      r.depositPaid ??
-        r.payment?.depositPaid ??
-        r.depositReceived ??
-        false
-    );
-
-    return {
-      id: r.id,
-      date,
-      endAt,
-      total,
-      paid,
-      rawStatus: r.status || "pending",
-      friendly: toFriendlyStatus(r.status, endAt),
-      service: r.serviceName || r.serviceSlug || "Residential Cleaning",
-      addressLine: r.address?.line1 || r.address?.street || "",
-      addressZip: r.address?.zip || "",
-      notes: r.notes || "",
-      frequency: r.frequency || "one-time",
-      addons: Array.isArray(r.addons) ? r.addons : [],
-      createdAt,
-
-      // NEW: deposit-aware fields
-      depositAmount,
-      depositPaid,
-
-      // Keep legacy-style fields so existing UI keeps working:
-      // - if deposit is paid, depositDue becomes 0 so "Deposit due" text disappears
-      depositDue: depositAmount && !depositPaid ? depositAmount : 0,
-      depositReceived: depositPaid,
-
-      // Optional but useful: attach a payment object mirroring AdminPayments
-      payment: {
-        ...(r.payment || {}),
-        totalPrice: total,
-        totalAmount: total,
-        paidAmount: paid,
-        amountPaid: paid,
-        depositAmount,
-        depositPaid,
-      },
-    };
-  });
-
-  return mapped.sort((a, b) => {
-    const aTime =
-      a.date?.toMillis?.() ??
-      (a.date ? new Date(a.date).getTime() : -Infinity);
-    const bTime =
-      b.date?.toMillis?.() ??
-      (b.date ? new Date(b.date).getTime() : -Infinity);
-    const aCreated =
-      a.createdAt?.toMillis?.() ??
-      (a.createdAt ? new Date(a.createdAt).getTime() : -Infinity);
-    const bCreated =
-      b.createdAt?.toMillis?.() ??
-      (b.createdAt ? new Date(b.createdAt).getTime() : -Infinity);
-    const aScore = Number.isFinite(aTime) ? aTime : aCreated;
-    const bScore = Number.isFinite(bTime) ? bTime : bCreated;
-    return bScore - aScore;
-  });
-}, [bookings]);
-
-  const now = new Date();
-
-  const upcomingBookings = useMemo(() => {
-    return bookingsWithFriendly.filter((b) => {
-      const end = b.endAt?.toDate
-        ? b.endAt.toDate()
-        : b.endAt
-        ? new Date(b.endAt)
-        : null;
-      const start = b.date?.toDate
-        ? b.date.toDate()
-        : b.date
-        ? new Date(b.date)
-        : null;
-      const status = (b.rawStatus || "").toLowerCase();
-
-      const isInactive = [
-        "cancelled",
-        "declined",
-        "refunded",
-        "expired",
-        "completed",
-      ].includes(status);
-      if (end && end >= now && !isInactive) return true;
-      if (start && start >= now && !isInactive) return true;
-      if (
-        !start &&
-        !end &&
-        ["pending", "confirmed", "scheduled"].includes(status)
-      )
-        return true;
-      return false;
-    });
-  }, [bookingsWithFriendly]);
-
-  const completedBookings = useMemo(() => {
-    return bookingsWithFriendly.filter((b) => {
-      const end = b.endAt?.toDate
-        ? b.endAt.toDate()
-        : b.endAt
-        ? new Date(b.endAt)
-        : null;
-      const status = (b.rawStatus || "").toLowerCase();
-      if (end && end < now) return true;
-      if (
-        [
-          "completed",
-          "cancelled",
-          "declined",
-          "refunded",
-          "expired",
-        ].includes(status)
-      )
-        return true;
-      return false;
-    });
-  }, [bookingsWithFriendly]);
-
-  const isRepeatClient =
-    completedBookings && completedBookings.length > 0;
-
-  const displayName =
-    user?.displayName ||
-    user?.email ||
-    user?.phoneNumber ||
-    "client";
+  const upcomingBookings = useMemo(() => bookingsWithFriendly.filter(isUpcoming).sort((a, b) => toMillis(a.startAt) - toMillis(b.startAt)), [bookingsWithFriendly]);
+  const completedBookings = useMemo(() => bookingsWithFriendly.filter((b) => !isUpcoming(b)), [bookingsWithFriendly]);
+  const isRepeatClient = completedBookings.some((b) => b.status === "completed");
+  const displayName = contactProfile.name || user?.displayName || user?.email || "client";
+  const [cancelReason, setCancelReason] = useState("");
+  const [cutoffHours, setCutoffHours] = useState(24);
+  useEffect(() => {
+    apiGet("/catalog").then((c) => setCutoffHours(c.rules?.changeCutoffHours ?? 24)).catch(() => {});
+  }, []);
 
   /* --------------- Actions --------------- */
   const { toast: showToast } = useToast();
+  const fail = (title) => (err) =>
+    showToast({ title, description: String(err?.message || err), variant: "destructive" });
 
   const handleLogin = async (e) => {
     e?.preventDefault?.();
     try {
       await signIn(loginEmail.trim(), loginPassword);
-      showToast({ title: "Signed in" });
       setSection("dashboard");
     } catch (err) {
-      showToast({
-        title: "Login failed",
-        description: err?.message || String(err),
-        variant: "destructive",
-      });
+      fail("Login failed")(err);
     }
   };
 
   const handleSignUp = async (e) => {
     e?.preventDefault?.();
     try {
-      const cred = await signUp(signupEmail.trim(), signupPassword);
-      if (signupName.trim()) {
-        try {
-          await updateProfile(cred.user, {
-            displayName: signupName.trim(),
-          });
-        } catch {}
-      }
-      await updateProfileContact(cred.user.uid, {
-        email: cred.user.email || signupEmail.trim(),
-        phone: cred.user.phoneNumber || "",
-        name: signupName.trim(),
-      });
-      showToast({
-        title: "Account created",
-        description: "You are now signed in.",
-      });
+      await signUp(signupEmail.trim(), signupPassword, signupName.trim());
       setSection("dashboard");
     } catch (err) {
-      showToast({
-        title: "Sign up failed",
-        description: err?.message || String(err),
-        variant: "destructive",
-      });
+      fail("Sign up failed")(err);
     }
   };
 
   const handleLogout = async () => {
-    unsubsRef.current.forEach((u) => {
-      try {
-        u();
-      } catch {}
-    });
-    unsubsRef.current = [];
     await signOut();
     showToast({ title: "Logged out" });
-    setAuthTab("login");
-    setSection("dashboard");
+    navigate("/");
   };
 
   const saveEmail = async () => {
-    const u = user;
-    if (!u) return;
+    const newEmail = (emailEdit || "").trim();
+    if (!newEmail || newEmail.toLowerCase() === (user?.email || "").toLowerCase()) return;
     try {
-      const newEmail = (emailEdit || "").trim();
-      await updateEmail(u, newEmail);
-      await updateProfileContact(u.uid, { email: newEmail });
-      showToast({ title: "Email updated" });
+      await changeEmail(newEmail);
+      showToast({ title: "Email updated", description: `We sent a confirmation link to ${newEmail}.` });
     } catch (err) {
-      showToast({
-        title: "Could not update email",
-        description: String(err?.message || err),
-        variant: "destructive",
-      });
+      if (err.code === "auth/requires-recent-login") {
+        const password = window.prompt("For your security, please enter your current password to change your email:");
+        if (!password) return;
+        try {
+          await changeEmail(newEmail, password);
+          showToast({ title: "Email updated", description: `We sent a confirmation link to ${newEmail}.` });
+          return;
+        } catch (e2) {
+          fail("Could not update email")(e2);
+          return;
+        }
+      }
+      fail("Could not update email")(err);
     }
   };
 
   const handleSaveContact = async (payload) => {
-    const u = user;
-    if (!u) return;
-
-    console.log("[handleSaveContact] called with payload:", payload);
-
     setSavingContact(true);
     try {
-      const trimmedName = (payload.name || payload.fullName || payload.fullname || payload.fullname || "" ).trim();
-      const trimmedPhone = (payload.phone || payload.phoneNumber || payload.primaryPhone || "").trim();
-
-      if (trimmedName && trimmedName !== (u.displayName || "")) {
-        await updateProfile(u, { displayName: trimmedName });
-      }
-
-      // Upsert canonical profile contact fields
-      await updateProfileContact(u.uid, { name: trimmedName, phone: trimmedPhone, email: u.email });
-
-      // If the caller passed an address (ProfileSettingsPanel auto-sync), persist it too
-      if (payload.address || payload.addressSummary) {
-        const addr = payload.address || { line1: payload.addressSummary || "" };
-        await updateProfileAddress(u.uid, addr);
-      }
-
-      setContactProfile({
-        name: trimmedName,
-        phone: trimmedPhone,
-      });
-
+      const name = (payload.name || payload.fullName || "").trim();
+      const phone = (payload.phone || payload.phoneNumber || "").trim();
+      await apiPatch("/me/profile", { name, ...(phone ? { phone } : {}) });
       showToast({ title: "Contact details saved" });
     } catch (err) {
-      showToast({
-        title: "Could not save contact",
-        description: String(err?.message || err),
-        variant: "destructive",
-      });
+      fail("Could not save contact")(err);
       throw err;
     } finally {
       setSavingContact(false);
@@ -975,405 +511,189 @@ const bookingsWithFriendly = useMemo(() => {
   };
 
   const sendReset = async () => {
-    const target = (emailEdit || user?.email || "").trim();
-    if (!target) {
-      showToast({
-        title: "Missing email",
-        description: "Please enter a valid email first.",
-        variant: "destructive",
-      });
-      return;
-    }
     try {
-      await resetPassword(target);
-      showToast({
-        title: "Password reset sent",
-        description: `Check ${target} for the reset link.`,
-      });
+      await resetPassword(user.email);
+      showToast({ title: "Password reset sent", description: `Check ${user.email} for the reset link.` });
     } catch (err) {
-      showToast({
-        title: "Could not send reset",
-        description: String(err?.message || err),
-        variant: "destructive",
-      });
+      fail("Could not send reset")(err);
     }
   };
 
-  // central handler for UpcomingBookings actions (via AppointmentsView)
   const handleUpcomingAction = ({ type, booking }) => {
+    const b = bookingsWithFriendly.find((x) => x.id === booking?.id) || booking;
     switch (type) {
       case "view":
-        setActiveBooking(booking);
+        setActiveBooking(b);
         setShowDetails(true);
         break;
       case "reschedule":
-        navigate(`/book?bookingId=${booking.id}`);
+        if (!b.permissions?.canReschedule) {
+          showToast({ title: "Please contact us", description: b.permissions?.changeBlockedReason || "This booking can't be rescheduled online." });
+          return;
+        }
+        navigate(`/book?bookingId=${b.id}`);
         break;
       case "cancel":
-        setActiveBooking(booking);
+        if (!b.permissions?.canCancel) {
+          showToast({ title: "Please contact us", description: b.permissions?.changeBlockedReason || "This booking can't be cancelled online." });
+          return;
+        }
+        setActiveBooking(b);
+        setCancelReason("");
         setShowCancel(true);
+        break;
+      case "pay":
+        payFor(b);
         break;
       case "book-new":
         navigate("/book");
+        break;
+      case "update-notes":
+        apiPatch(`/bookings/${encodeURIComponent(b.id)}/notes`, { accessNotes: booking.notes ?? "" })
+          .then(() => showToast({ title: "Notes saved" }), fail("Could not save notes"));
+        break;
+      case "download-pdf":
+        openInvoice(b.id);
         break;
       default:
         break;
     }
   };
 
-  // Address helpers
-  const resetAddrForm = () =>
-    setAddrForm({ type: "home", street: "", city: "", state: "", zip: "" });
+  const openInvoice = async (ref) => {
+    const w = window.open("", "_blank");
+    try {
+      const { invoice } = await apiGet(`/bookings/${encodeURIComponent(ref)}/invoice`);
+      const html = buildInvoiceHtml(invoice, { autoPrint: true });
+      if (w) {
+        w.document.open();
+        w.document.write(html);
+        w.document.close();
+      }
+    } catch (e) {
+      w?.close();
+      fail("Could not open invoice")(e);
+    }
+  };
 
+  const payFor = async (b) => {
+    const purpose = b.permissions?.canPayDeposit ? "deposit" : b.permissions?.canPayBalance ? "balance" : null;
+    if (!purpose) return;
+    try {
+      const { checkoutUrl } = await apiPost(`/bookings/${encodeURIComponent(b.id)}/checkout`, { purpose });
+      window.location.href = checkoutUrl;
+    } catch (err) {
+      fail("Could not start payment")(err);
+    }
+  };
+
+  const confirmCancel = async () => {
+    try {
+      await apiPost(`/bookings/${encodeURIComponent(activeBooking.id)}/cancel`, { reason: cancelReason || undefined });
+      toast({ title: "Booking cancelled", description: "We emailed you a confirmation." });
+      setShowCancel(false);
+    } catch (e) {
+      fail("Could not cancel")(e);
+    }
+  };
+
+  const submitReview = async () => {
+    if (!reviewText || reviewText.trim().length < 5) {
+      toast({ title: "Please enter a longer review", variant: "destructive" });
+      return;
+    }
+    try {
+      await apiPost(`/bookings/${encodeURIComponent(activeBooking.id)}/review`, {
+        rating: Number(reviewRating) || 5,
+        comment: reviewText.trim(),
+        displayMode: reviewDisplayMode,
+      });
+      toast({ title: "Thanks for your feedback", description: "Your review is pending approval." });
+      setShowReview(false);
+      setReviewText("");
+      setReviewRating(5);
+    } catch (e) {
+      fail("Could not submit review")(e);
+    }
+  };
+
+  // Address helpers
+  const resetAddrForm = () => setAddrForm({ type: "home", street: "", city: "", state: "", zip: "" });
   const openAddAddress = () => {
     setAddrEditingId(null);
     resetAddrForm();
     setAddrModalOpen(true);
   };
-
   const openEditAddress = (row) => {
     setAddrEditingId(row.id);
-    setAddrForm({
-      type: row.type || "other",
-      street: row.street || "",
-      city: row.city || "",
-      state: row.state || "",
-      zip: row.zip || "",
-    });
+    setAddrForm({ type: row.label || "home", street: row.line1 || "", city: row.city || "", state: row.state || "", zip: row.zip || "" });
     setAddrModalOpen(true);
   };
-
   const saveAddress = async () => {
-    const u = user;
-    if (!u) return;
-    const raw = {
-      type: addrForm.type || "other",
+    const body = {
+      label: addrForm.type ? addrForm.type[0].toUpperCase() + addrForm.type.slice(1) : "Home",
       line1: (addrForm.street || "").trim(),
       city: (addrForm.city || "").trim(),
       state: (addrForm.state || "").trim(),
       zip: (addrForm.zip || "").trim(),
     };
-    const norm = normalizeAddress(raw);
-    const clean = { ...norm, updatedAt: serverTimestamp() };
-    if (!clean.line1 || !clean.city || !clean.state || !clean.zip) {
-      showToast({
-        title: "Missing fields",
-        description: "Please complete all address fields.",
-        variant: "destructive",
-      });
+    if (!body.line1 || !body.city || !body.state || !body.zip) {
+      showToast({ title: "Missing fields", description: "Please complete all address fields.", variant: "destructive" });
       return;
     }
-    const sub = collection(db, "profiles", u.uid, "addresses");
     try {
-      if (addrEditingId) {
-        await updateDoc(doc(sub, addrEditingId), clean);
-        showToast({ title: "Address updated" });
-      } else {
-        await addDoc(sub, {
-          ...clean,
-          isDefault: addresses.length === 0,
-          createdAt: serverTimestamp(),
-        });
-        showToast({ title: "Address added" });
-      }
+      if (addrEditingId) await apiPatch(`/me/addresses/${addrEditingId}`, body);
+      else await apiPost("/me/addresses", body);
+      showToast({ title: addrEditingId ? "Address updated" : "Address added" });
       setAddrModalOpen(false);
       setAddrEditingId(null);
       resetAddrForm();
     } catch (e) {
-      showToast({
-        title: "Could not save address",
-        description: String(e?.message || e),
-        variant: "destructive",
-      });
+      fail("Could not save address")(e);
     }
   };
-
-  const deleteAddress = async (row) => {
-    const u = user;
-    if (!u) return;
-    try {
-      await deleteDoc(doc(db, "profiles", u.uid, "addresses", row.id));
-      showToast({ title: "Address removed" });
-    } catch (e) {
-      showToast({
-        title: "Could not remove address",
-        description: String(e?.message || e),
-        variant: "destructive",
-      });
-    }
-  };
-
-  const setDefaultAddress = async (row) => {
-    const u = user;
-    if (!u) return;
-    const sub = collection(db, "profiles", u.uid, "addresses");
-    try {
-      const snapshot = await getDocs(sub);
-      const batchUpdates = snapshot.docs
-        .map((d) =>
-          updateDoc(doc(sub, d.id), { isDefault: d.id === row.id })
-        );
-      await Promise.all(batchUpdates);
-      showToast({ title: "Default address set" });
-    } catch (e) {
-      showToast({
-        title: "Could not set default",
-        description: String(e?.message || e),
-        variant: "destructive",
-      });
-    }
-  };
-
-  const moveAddressUp = async (row) => {
-    const u = user;
-    if (!u) return;
+  const deleteAddress = (row) => apiDelete(`/me/addresses/${row.id}`).then(() => showToast({ title: "Address removed" }), fail("Could not remove address"));
+  const setDefaultAddress = (row) => apiPatch(`/me/addresses/${row.id}`, { isDefault: true }).then(() => showToast({ title: "Default address set" }), fail("Could not set default"));
+  const moveAddress = async (row, delta) => {
     const idx = addresses.findIndex((a) => a.id === row.id);
-    if (idx <= 0) return;
-
-    const newOrder = [...addresses];
-    [newOrder[idx - 1], newOrder[idx]] = [newOrder[idx], newOrder[idx - 1]];
-
+    const j = idx + delta;
+    if (idx < 0 || j < 0 || j >= addresses.length) return;
+    const order = [...addresses];
+    [order[idx], order[j]] = [order[j], order[idx]];
     try {
-      const sub = collection(db, "profiles", u.uid, "addresses");
-      const updates = newOrder
-        .map((a, i) => {
-          const desired = i;
-          if ((a.sortOrder ?? null) === desired) return null;
-          return updateDoc(doc(sub, a.id), {
-            sortOrder: desired,
-            updatedAt: serverTimestamp(),
-          });
-        })
-        .filter(Boolean);
-      await Promise.all(updates);
-      toast({ title: "Address order updated" });
-    } catch (err) {
-      toast({
-        title: "Could not reorder",
-        description: String(err?.message || err),
-        variant: "destructive",
-      });
+      await Promise.all(order.map((a, i) => (a.sortOrder === i ? null : apiPatch(`/me/addresses/${a.id}`, { sortOrder: i }))).filter(Boolean));
+    } catch (e) {
+      fail("Could not reorder")(e);
     }
   };
+  const moveAddressUp = (row) => moveAddress(row, -1);
+  const moveAddressDown = (row) => moveAddress(row, 1);
 
-  const moveAddressDown = async (row) => {
-    const u = user;
-    if (!u) return;
-    const idx = addresses.findIndex((a) => a.id === row.id);
-    if (idx === -1 || idx >= addresses.length - 1) return;
-
-    const newOrder = [...addresses];
-    [newOrder[idx], newOrder[idx + 1]] = [
-      newOrder[idx + 1],
-      newOrder[idx],
-    ];
-
-    try {
-      const sub = collection(db, "profiles", u.uid, "addresses");
-      const updates = newOrder
-        .map((a, i) => {
-          const desired = i;
-          if ((a.sortOrder ?? null) === desired) return null;
-          return updateDoc(doc(sub, a.id), {
-            sortOrder: desired,
-            updatedAt: serverTimestamp(),
-          });
-        })
-        .filter(Boolean);
-      await Promise.all(updates);
-      toast({ title: "Address order updated" });
-    } catch (err) {
-      toast({
-        title: "Could not reorder",
-        description: String(err?.message || err),
-        variant: "destructive",
-      });
-    }
-  };
-
-  /* ---------------- Preferences persistence ---------------- */
   const handleSavePreferences = async (prefs) => {
-    const u = user;
-    if (!u) return;
     setSavingPreferences(true);
-
     try {
-      await upsertProfile(u.uid, { preferences: prefs || null });
-
-      setPreferences(prefs || null);
+      await apiPatch("/me/profile", { preferences: prefs || {} });
       toast({ title: "Preferences saved" });
     } catch (err) {
-      toast({
-        title: "Could not save preferences",
-        description: String(err?.message || err),
-        variant: "destructive",
-      });
+      fail("Could not save preferences")(err);
     } finally {
       setSavingPreferences(false);
     }
   };
 
   const handleSavePreferredContactMethod = async (method) => {
-    const u = user;
-    if (!u) return;
     setSavingPreferredContactMethod(true);
-
     try {
-      await upsertProfile(u.uid, {
-        preferredContactMethod: method || null,
-      });
-
-      setPreferredContactMethod(method || null);
+      await apiPatch("/me/profile", { preferredContactMethod: method || null });
       toast({ title: "Contact method saved" });
     } catch (err) {
-      toast({
-        title: "Could not save contact method",
-        description: String(err?.message || err),
-        variant: "destructive",
-      });
+      fail("Could not save contact method")(err);
     } finally {
       setSavingPreferredContactMethod(false);
     }
   };
 
-  /* -------------------- Render (Auth) -------------------- */
-  if (!user) {
-    return (
-      <div className="relative min-h-[90vh] flex items-center justify-center px-3 sm:px-4 py-12 sm:py-16 md:py-20 bg-[#FADADD]">
-        <div className="w-full max-w-md">
-          <motion.div
-            className="relative z-10 w-full"
-            initial={{ opacity: 0, y: -20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5 }}
-          >
-            <div className="text-center mb-6">
-              <h1 className="text-2xl sm:text-3xl md:text-4xl font-bold text-plum">
-                Log in or Create your account
-              </h1>
-              <p className="text-plum/80 mt-1">
-                <span className="font-medium">Returning customers:</span> Sign
-                in.&nbsp;
-                <span className="font-medium">New customers:</span> Create your
-                account to book.
-              </p>
-            </div>
-
-            <Tabs
-              value={authTab}
-              onValueChange={setAuthTab}
-              className="w-full"
-            >
-              <TabsList className="grid w-full grid-cols-2 rounded-full bg-white p-1">
-                <TabsTrigger
-                  value="login"
-                  className="rounded-full data-[state=active]:bg-white data-[state=active]:shadow"
-                >
-                  Sign In
-                </TabsTrigger>
-                <TabsTrigger
-                  value="signup"
-                  className="rounded-full data-[state=active]:bg-white data-[state=active]:shadow"
-                >
-                  Create Account
-                </TabsTrigger>
-              </TabsList>
-
-              <TabsContent value="login">
-                <div className="shadow-md border-plum/10 bg-white rounded-xl">
-                  <form onSubmit={handleLogin} className="p-6 space-y-4">
-                    <div>
-                      <Label htmlFor="email">Email</Label>
-                      <Input
-                        id="email"
-                        type="email"
-                        placeholder="you@example.com"
-                        value={loginEmail}
-                        onChange={(e) => setLoginEmail(e.target.value)}
-                        required
-                        className="bg-white"
-                        autoComplete="email"
-                      />
-                    </div>
-                    <div>
-                      <Label htmlFor="password">Password</Label>
-                      <Input
-                        id="password"
-                        type="password"
-                        placeholder="••••••••"
-                        value={loginPassword}
-                        onChange={(e) => setLoginPassword(e.target.value)}
-                        required
-                        className="bg-white"
-                        autoComplete="current-password"
-                      />
-                    </div>
-                    <Button
-                      type="submit"
-                      className="w-full bg-gold hover:bg-gold/90 text-white rounded-full"
-                    >
-                      Sign In
-                    </Button>
-                  </form>
-                </div>
-              </TabsContent>
-
-              <TabsContent value="signup">
-                <div className="shadow-md border-plum/10 bg-white rounded-xl p-6 space-y-4">
-                  <form onSubmit={handleSignUp} className="space-y-4">
-                    <div>
-                      <Label htmlFor="signup-name">Full Name</Label>
-                      <Input
-                        id="signup-name"
-                        placeholder="John Doe"
-                        value={signupName}
-                        onChange={(e) => setSignupName(e.target.value)}
-                        required
-                        className="bg-white"
-                        autoComplete="name"
-                      />
-                    </div>
-                    <div>
-                      <Label htmlFor="signup-email">Email</Label>
-                      <Input
-                        id="signup-email"
-                        type="email"
-                        placeholder="you@example.com"
-                        value={signupEmail}
-                        onChange={(e) => setSignupEmail(e.target.value)}
-                        required
-                        className="bg-white"
-                        autoComplete="email"
-                      />
-                    </div>
-                    <div>
-                      <Label htmlFor="signup-password">Password</Label>
-                      <Input
-                        id="signup-password"
-                        type="password"
-                        placeholder="Create a password"
-                        value={signupPassword}
-                        onChange={(e) => setSignupPassword(e.target.value)}
-                        required
-                        className="bg-white"
-                        autoComplete="new-password"
-                      />
-                    </div>
-                    <Button
-                      type="submit"
-                      className="w-full bg-gold hover:bg-gold/90 text-white rounded-full"
-                    >
-                      Create Account
-                    </Button>
-                  </form>
-                </div>
-              </TabsContent>
-            </Tabs>
-          </motion.div>
-        </div>
-      </div>
-    );
-  }
+  if (!user) return null; // ClientRoute redirects signed-out visitors to /auth
 
   /* -------------------- Logged-in -------------------- */
   return (
@@ -1490,7 +810,7 @@ const bookingsWithFriendly = useMemo(() => {
                 setShowReview(true);
               }}
               depositAmount={50}
-              cancellationWindowHours={48}
+              cancellationWindowHours={cutoffHours}
             />
               </div>
             )}
@@ -1576,24 +896,29 @@ const bookingsWithFriendly = useMemo(() => {
               </Button>
               {activeBooking && (
                 <>
-                  <Button
-                    variant="outline"
-                    onClick={() =>
-                      navigate(`/book?bookingId=${activeBooking.id}`)
-                    }
-                  >
-                    <Pencil className="w-4 h-4 mr-1" /> Reschedule
-                  </Button>
-                  <Button
-                    variant="outline"
-                    className="text-rose-600 border-rose-200"
-                    onClick={() => {
-                      setShowDetails(false);
-                      setShowCancel(true);
-                    }}
-                  >
-                    <XCircle className="w-4 h-4 mr-1" /> Cancel
-                  </Button>
+                  {(activeBooking.permissions?.canPayDeposit || activeBooking.permissions?.canPayBalance) && (
+                    <Button className="bg-gold text-white" onClick={() => payFor(activeBooking)}>
+                      <CreditCard className="w-4 h-4 mr-1" /> {activeBooking.permissions?.canPayDeposit ? "Pay deposit" : "Pay balance"}
+                    </Button>
+                  )}
+                  {activeBooking.permissions?.canReschedule && (
+                    <Button variant="outline" onClick={() => navigate(`/book?bookingId=${activeBooking.id}`)}>
+                      <Pencil className="w-4 h-4 mr-1" /> Reschedule
+                    </Button>
+                  )}
+                  {activeBooking.permissions?.canCancel && (
+                    <Button
+                      variant="outline"
+                      className="text-rose-600 border-rose-200"
+                      onClick={() => {
+                        setShowDetails(false);
+                        setCancelReason("");
+                        setShowCancel(true);
+                      }}
+                    >
+                      <XCircle className="w-4 h-4 mr-1" /> Cancel
+                    </Button>
+                  )}
                 </>
               )}
             </div>
@@ -1603,7 +928,7 @@ const bookingsWithFriendly = useMemo(() => {
             <div className="space-y-2 text-sm">
               <div>
                 <b>Order:</b>{" "}
-                {`CI-${activeBooking.id.slice(0, 5).toUpperCase()}`}
+                {activeBooking.invoiceNumber}
               </div>
               <div>
                 <b>Service:</b> {activeBooking.service}
@@ -1619,11 +944,17 @@ const bookingsWithFriendly = useMemo(() => {
               <div>
                 <b>Total:</b> ${activeBooking.total.toFixed(2)}
               </div>
+              <div>
+                <b>Paid:</b> ${Number(activeBooking.amountPaid || 0).toFixed(2)} · <b>Balance:</b> ${Number(activeBooking.balanceDue || 0).toFixed(2)}
+              </div>
               {activeBooking.depositDue > 0 && (
                 <div>
                   <b>Deposit Due:</b>{" "}
                   ${activeBooking.depositDue.toFixed(2)}
                 </div>
+              )}
+              {activeBooking.permissions?.changeBlockedReason && (
+                <div className="text-xs text-plum/70 bg-plum/5 rounded p-2">{activeBooking.permissions.changeBlockedReason}</div>
               )}
               <div>
                 <b>Frequency:</b> {activeBooking.frequency}
@@ -1668,21 +999,7 @@ const bookingsWithFriendly = useMemo(() => {
               </Button>
               <Button
                 className="bg-rose-600 text-white"
-                onClick={async () => {
-                  try {
-                    const cancelBooking = httpsCallable(functions, "cancelBooking");
-                    await cancelBooking({ bookingId: activeBooking.id });
-                    toast({ title: "Booking cancelled" });
-                  } catch (e) {
-                    toast({
-                      title: "Could not cancel",
-                      description: String(e?.message || e),
-                      variant: "destructive",
-                    });
-                  } finally {
-                    setShowCancel(false);
-                  }
-                }}
+                onClick={confirmCancel}
               >
                 <Ban className="w-4 h-4 mr-1" /> Confirm Cancel
               </Button>
@@ -1690,9 +1007,10 @@ const bookingsWithFriendly = useMemo(() => {
           }
         >
           <p className="text-sm text-plum/80">
-            This will mark the booking as cancelled. Deposit policy may
-            apply. Are you sure?
+            This cancels your appointment. Deposits are non-refundable per our policy. Are you sure?
           </p>
+          <Label htmlFor="cancel-reason" className="mt-3 block text-sm">Reason (optional)</Label>
+          <Input id="cancel-reason" value={cancelReason} onChange={(e) => setCancelReason(e.target.value)} maxLength={500} className="bg-white mt-1" />
         </Modal>
 
         {/* Review modal */}
@@ -1710,103 +1028,7 @@ const bookingsWithFriendly = useMemo(() => {
               </Button>
               <Button
                 className="bg-gold text-white"
-                onClick={async () => {
-                  const u = user;
-                  const email = u?.email || null;
-
-                  if (!reviewText || reviewText.trim().length < 5) {
-                    toast({
-                      title: "Please enter a longer review",
-                      variant: "destructive",
-                    });
-                    return;
-                  }
-
-                  if (!activeBooking?.id) {
-                    toast({
-                      title: "No booking selected",
-                      variant: "destructive",
-                    });
-                    return;
-                  }
-
-                  const ratingValue = Number(reviewRating) || 5;
-
-                  // Compute safe reviewDisplayName based on displayMode
-                  let reviewDisplayName = "Anonymous";
-                  const rawName = contactProfile?.name || u?.reviewDisplayName || "";
-                  
-                  if (reviewDisplayMode === "anonymous") {
-                    reviewDisplayName = "Anonymous";
-                  } else if (reviewDisplayMode === "initials") {
-                    // Extract initials from name
-                    const parts = rawName.trim().split(/\s+/);
-                    if (parts.length >= 2) {
-                      reviewDisplayName = `${parts[0].charAt(0).toUpperCase()}.${parts[parts.length - 1].charAt(0).toUpperCase()}.`;
-                    } else if (parts.length === 1 && parts[0]) {
-                      reviewDisplayName = `${parts[0].charAt(0).toUpperCase()}.`;
-                    } else {
-                      reviewDisplayName = "Anonymous";
-                    }
-                  } else if (reviewDisplayMode === "firstInitialLastName") {
-                    // First initial + last name
-                    const parts = rawName.trim().split(/\s+/);
-                    if (parts.length >= 2) {
-                      reviewDisplayName = `${parts[0].charAt(0).toUpperCase()}. ${parts[parts.length - 1]}`;
-                    } else if (parts.length === 1 && parts[0]) {
-                      reviewDisplayName = parts[0];
-                    } else {
-                      reviewDisplayName = "Anonymous";
-                    }
-                  }
-
-                  try {
-                    // 1) Create review document with new schema
-                    const reviewRef = await addDoc(collection(db, "reviews"), {
-                      clientId: u?.uid || null,
-                      bookingId: activeBooking.id,
-                      serviceName: activeBooking.service || null,
-                      displayMode: reviewDisplayMode,
-                      reviewDisplayName,
-                      rating: ratingValue,
-                      comment: reviewText.trim(),
-                      body: reviewText.trim(), // keep for backward compat
-                      source: "client-portal",
-                      status: "pending",
-                      createdAt: serverTimestamp(),
-                    });
-
-                    // 2) Update the booking with review metadata so PastBookings can see it
-                    await updateBooking(activeBooking.id, {
-                      reviewRating: ratingValue,
-                      reviewId: reviewRef.id,
-                      reviewLeftAt: serverTimestamp(),
-                    });
-
-                    // 3) Optimistically update local state so UI reflects it immediately
-                    setBookings((prev) =>
-                      prev.map((b) =>
-                        b.id === activeBooking.id ? { ...b, reviewRating: ratingValue } : b
-                      )
-                    );
-
-                    toast({
-                      title: "Thanks for your feedback",
-                      description: "Your review is pending approval.",
-                    });
-
-                    setShowReview(false);
-                    setReviewText("");
-                    setReviewRating(5);
-                    setReviewDisplayMode("initials");
-                  } catch (err) {
-                    toast({
-                      title: "Could not submit review",
-                      description: String(err?.message || err),
-                      variant: "destructive",
-                    });
-                  }
-                }}
+                onClick={submitReview}
               >
                 <CheckCircle2 className="w-4 h-4 mr-1" /> Submit
               </Button>

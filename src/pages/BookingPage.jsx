@@ -1,5 +1,5 @@
 // src/pages/BookingPage.jsx
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
@@ -10,39 +10,15 @@ import { Textarea } from '@/components/ui/textarea';
 import { Calendar } from '@/components/ui/calendar';
 import { useToast } from '@/components/ui/use-toast';
 import { Home, Sparkles, Truck, Building, Clock, ChevronRight, Tag, Info, AlertCircle, Loader2 } from 'lucide-react';
-import { format, isSunday } from 'date-fns';
+import { format } from 'date-fns';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import {
-  ADD_ONS,
-  ESTIMATE_RULES,
-  FREQUENCIES,
-  SERVICES,
-  getFrequencyById,
-  getServiceBySlug,
-} from '@/data/services';
-
-// 🔥 Firestore
-import { db, auth, functions } from '@/lib/firebase';
-import { readProfile, updateProfileAddressFromServiceAddress } from '@/lib/profileModel';
-import { normalizePhone } from '@/lib/contactModel';
-import { getAddress } from '@/lib/db';
-import {
-  // addDoc,
-  collection,
-  onSnapshot,
-  getDocs,
-  doc,
-  getDoc,
-} from 'firebase/firestore';
-import { hasOverlap, checkConflictsTransactional, getDayAvailability } from '@/lib/db';
-import { httpsCallable } from 'firebase/functions';
-
-// ----- Env capacity knobs -----
-const SLOT_CAPACITY = Number(import.meta.env.VITE_SLOT_CAPACITY || 1);
-const DAILY_CAPACITY = Number(import.meta.env.VITE_DAILY_CAPACITY || 6);
+import { ADD_ONS, FREQUENCIES, SERVICES } from '@/data/services';
+import { useAuth } from '@/context/AuthContext';
+import { apiGet, apiPost, qs } from '@/lib/api';
+import { normalizeBooking, dateKey as toDateKey } from '@/lib/model';
 
 // ----- Constants -----
 const SERVICE_ICONS = { Home, Sparkles, Truck, Building };
@@ -59,15 +35,6 @@ const US_STATES = [
 const addons = ADD_ONS.map((addon) => ({ ...addon, name: addon.label }));
 const frequencies = FREQUENCIES;
 
-// Fixed start-time options (12h display)
-const TIME_OPTIONS = ['09:00 AM', '11:00 AM', '01:00 PM', '03:00 PM'];
-
-// Operating hours (Sun closed; shorter Sat)
-const OPERATING_RULES = {
-  SUN_CLOSED: true,
-  SAT_LATEST: '01:00 PM',
-};
-
 // ===== Solid, readable Select styles =====
 const selectTriggerClass =
   'bg-white text-plum border border-plum/30 rounded-md ' +
@@ -75,71 +42,24 @@ const selectTriggerClass =
 const selectContentClass = 'bg-white border border-plum/20 text-plum shadow-xl';
 const selectItemClass = 'focus:bg-gold/10 focus:text-plum cursor-pointer';
 
-// ----- Utils -----
-// Shared helper: 24h Date -> "hh:mm AM/PM"
-function timeOptionFromDate(dateObj) {
-  if (!dateObj) return '';
-  const h24 = dateObj.getHours();
-  const m = dateObj.getMinutes();
-  const ampm = h24 >= 12 ? 'PM' : 'AM';
-  const h12 = h24 % 12 || 12;
-  const hh = String(h12).padStart(2, '0');
-  const mm = String(m).padStart(2, '0');
-  return `${hh}:${mm} ${ampm}`;
-}
+const STORAGE_KEY = 'booking_form_v2';
 
-function parseTime12hToHoursMinutes(t) {
-  const m = String(t || '').match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
-  if (!m) return null;
-  let h = parseInt(m[1], 10);
-  const min = parseInt(m[2], 10);
-  const ampm = m[3].toUpperCase();
-  if (ampm === 'PM' && h !== 12) h += 12;
-  if (ampm === 'AM' && h === 12) h = 0;
-  return { h, min };
-}
-function combineDateAndTime(dateObj, timeStr) {
-  if (!dateObj || !timeStr) return null;
-  const t = parseTime12hToHoursMinutes(timeStr);
-  if (!t) return null;
-  const d = new Date(dateObj);
-  d.setHours(t.h, t.min, 0, 0);
-  return d;
-}
-function getTimeOptionsForDate(date) {
-  if (!date) return TIME_OPTIONS;
-  if (OPERATING_RULES.SUN_CLOSED && isSunday(date)) return [];
-  const dow = date.getDay(); // 0 Sun, 6 Sat
-  if (dow === 6 && OPERATING_RULES.SAT_LATEST) {
-    return TIME_OPTIONS.filter((t) => {
-      const cutoff = parseTime12hToHoursMinutes(OPERATING_RULES.SAT_LATEST);
-      const curr = parseTime12hToHoursMinutes(t);
-      if (!cutoff || !curr) return true;
-      if (curr.h < cutoff.h) return true;
-      if (curr.h === cutoff.h) return curr.min <= cutoff.min;
-      return false;
-    });
-  }
-  return TIME_OPTIONS;
-}
+/** Server error -> form field key */
+const FIELD_MAP = {
+  'contact.name': 'firstName', 'contact.phone': 'phone', 'contact.email': 'email', 'address.line1': 'street',
+  'address.city': 'city', 'address.state': 'state', 'address.zip': 'zip', sqft: 'sqft', promoCode: 'promoCode',
+};
 
-// --- conflict helpers (same-day preflight) ---
-const startOfDay = (d) => {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x;
-};
-const endOfDay = (d) => {
-  const x = new Date(d);
-  x.setHours(23, 59, 59, 999);
-  return x;
-};
-const STORAGE_KEY = 'booking_form_v1';
+function newRequestId() {
+  const r = globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `req_${r.replace(/[^A-Za-z0-9_-]/g, '')}`;
+}
 
 const BookingPage = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { user, authReady } = useAuth();
 
   const bookingId = searchParams.get('bookingId');
   const [isEditing, setIsEditing] = useState(Boolean(bookingId));
@@ -149,17 +69,20 @@ const BookingPage = () => {
   const [addressOptions, setAddressOptions] = useState([]);
   const [selectedAddressId, setSelectedAddressId] = useState('');
   const [loadingAddresses, setLoadingAddresses] = useState(false);
+  const [saveAddress, setSaveAddress] = useState(true);
 
-  // Profile/address prefill
-  const [profileData, setProfileData] = useState(null);
-  const [addressData, setAddressData] = useState(null);
-  const [loadingProfile, setLoadingProfile] = useState(false);
+  // Business rules from the server
+  const [rules, setRules] = useState(null);
 
   const [form, setForm] = useState(() => {
-    const saved = sessionStorage.getItem(STORAGE_KEY);
-    const base = saved ? JSON.parse(saved) : {};
+    let base = {};
+    try {
+      base = JSON.parse(sessionStorage.getItem(STORAGE_KEY) || '{}');
+    } catch {
+      base = {};
+    }
     return {
-      service: base.service || 'residential-cleaning',
+      service: base.service || searchParams.get('service') || 'residential-cleaning',
       propertyType: base.propertyType || 'house',
       sqft: base.sqft ?? 1500,
       bedrooms: base.bedrooms ?? 2,
@@ -170,759 +93,322 @@ const BookingPage = () => {
       addons: base.addons || [],
       frequency: base.frequency || 'one-time',
       date: base.date ? new Date(base.date) : null,
-      time: base.time || '',
+      time: '',
       firstName: base.firstName || '',
       lastName: base.lastName || '',
-      email: base.email || '',
+      email: '',
       phone: base.phone || '',
-      street: base.street || base.address || '',
+      street: base.street || '',
       city: base.city || '',
       state: base.state || '',
       zip: base.zip || '',
-      // Separate notes:
-      accessNotes: base.accessNotes || base.notes || '',
+      accessNotes: base.accessNotes || '',
       cleanerNotes: base.cleanerNotes || '',
-      // Recurrence
-      recurrence: base.recurrence || 'none',
       promoCode: base.promoCode || '',
-      agreePolicy: base.agreePolicy || false,
+      agreePolicy: false,
     };
   });
 
-  const [estimate, setEstimate] = useState({
-    base: 0,
-    sizeCost: 0,
-    conditionCost: 0,
-    petsCost: 0,
-    addonsCost: 0,
-    subtotal: 0,
-    discount: 0,
-    promoDiscount: 0,
-    total: 0,
-    duration: 0,
-  });
-
+  // Server quote (single source of pricing)
+  const [quote, setQuote] = useState(null);
+  const [quoteError, setQuoteError] = useState('');
   const [promoApplied, setPromoApplied] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const checkoutRequestIdRef = useRef(null);
+  const requestIdRef = useRef(newRequestId());
 
-  const emptyDayAvailability = useCallback(() => ({
-    dateKey: null,
-    fullyBooked: false,
-    blockedSlots: [],
-    slotCounts: {},
-    dayCountBlocking: 0,
-    unavailableReason: null,
-  }), []);
-
-  // Server-side day availability (no booking details, only aggregated counts/blockedSlots)
-  const [dayAvailability, setDayAvailability] = useState({
-    dateKey: null,
-    fullyBooked: false,
-    blockedSlots: [],
-    slotCounts: {},
-    dayCountBlocking: 0,
-    unavailableReason: null,
-  });
+  // Day availability from the server
+  const [day, setDay] = useState(null);
   const [availabilityStatus, setAvailabilityStatus] = useState('idle');
   const [availabilityError, setAvailabilityError] = useState('');
   const [loadingDay, setLoadingDay] = useState(false);
+  const [unavailableDates, setUnavailableDates] = useState(new Set());
 
-  // Validation state
   const [errors, setErrors] = useState({});
   const estimateLiveRef = useRef(null);
 
-  // Current user from Firebase Auth
-  const currentUser = auth.currentUser;
+  // Estimate view-model (keeps the existing sidebar markup)
+  const estimate = useMemo(() => {
+    const total = quote?.totalPrice ?? 0;
+    return { total, duration: quote?.durationHours ?? 0, lineItems: quote?.lineItems ?? [] };
+  }, [quote]);
 
-  // Load booking for reschedule/edit
   useEffect(() => {
-    let didCancel = false;
-    async function load() {
-      if (!bookingId) return;
-      try {
-        const snap = await getDoc(doc(db, 'bookings', bookingId));
-        if (!snap.exists()) {
+    apiGet('/catalog').then((c) => setRules(c.rules)).catch(() => setRules(null));
+  }, []);
+
+  // Require sign-in to book (the booking belongs to the account)
+  useEffect(() => {
+    if (authReady && !user) {
+      navigate(`/auth?redirect=${encodeURIComponent('/book' + (bookingId ? `?bookingId=${bookingId}` : ''))}`, { replace: true });
+    }
+  }, [authReady, user, navigate, bookingId]);
+
+  // Load booking for reschedule
+  useEffect(() => {
+    if (!bookingId || !user) return;
+    let cancelled = false;
+    apiGet(`/bookings/${encodeURIComponent(bookingId)}`)
+      .then(({ booking }) => {
+        if (cancelled) return;
+        const b = normalizeBooking(booking);
+        if (!b.permissions?.canReschedule) {
+          toast({ variant: 'destructive', title: 'This booking cannot be rescheduled online', description: b.permissions?.changeBlockedReason || 'Please contact us to make changes.' });
+          setIsEditing(false);
+          navigate('/portal', { replace: true });
+          return;
+        }
+        setLoadedBooking(b);
+        const [first, ...rest] = String(b.contact?.name || '').split(/\s+/);
+        setForm((prev) => ({
+          ...prev,
+          service: b.serviceSlug || prev.service,
+          propertyType: b.propertyType || prev.propertyType,
+          sqft: b.sqft ?? prev.sqft,
+          bedrooms: b.bedrooms ?? prev.bedrooms,
+          bathrooms: b.bathrooms ?? prev.bathrooms,
+          condition: b.condition || 'standard',
+          pets: b.pets ? 'yes' : 'no',
+          addons: b.addons || [],
+          frequency: b.frequency || 'one-time',
+          date: null,
+          time: '',
+          firstName: first || '',
+          lastName: rest.join(' '),
+          email: b.contact?.email || '',
+          phone: b.contact?.phone || '',
+          street: b.address?.line1 || '',
+          city: b.address?.city || '',
+          state: b.address?.state || '',
+          zip: b.address?.zip || '',
+          accessNotes: b.accessNotes || '',
+          cleanerNotes: b.cleanerNotes || '',
+          promoCode: b.promoCode || '',
+          agreePolicy: true,
+        }));
+        setPromoApplied(!!b.promoCode);
+      })
+      .catch(() => {
+        if (!cancelled) {
           toast({ variant: 'destructive', title: 'Booking not found' });
           setIsEditing(false);
-          return;
         }
-        const data = snap.data();
-        setLoadedBooking({ id: snap.id, ...data });
-
-        // Basic ownership check for UX (security is enforced by rules)
-        const u = auth.currentUser;
-        const uEmail = (u?.email || '').toLowerCase();
-        const owns =
-          (u && data.userId === u.uid) ||
-          (uEmail && data?.contact?.emailLower === uEmail) ||
-          (Array.isArray(data?.ownerKeys) && data.ownerKeys.includes(`uid:${u?.uid}`));
-
-        if (!owns) {
-          toast({
-            variant: 'destructive',
-            title: 'You do not have access to edit this booking.',
-          });
-          setIsEditing(false);
-          return;
-        }
-
-        // Prefill form from booking
-        const sAt = data.startAt?.toDate ? data.startAt.toDate() : null;
-        const timeStr = sAt ? timeOptionFromDate(sAt) : '';
-
-        const prefill = {
-          service: data.serviceSlug || 'residential-cleaning',
-          propertyType: data.propertyType || 'house',
-          sqft: data.sqft ?? 1500,
-          bedrooms: data.bedrooms ?? 2,
-          bathrooms: data.bathrooms ?? 1,
-          condition: data.condition || 'standard',
-          pets: data.pets ? 'yes' : 'no',
-          addons: Array.isArray(data.addons) ? data.addons : [],
-          frequency: data.frequency || 'one-time',
-          date: sAt ? new Date(sAt) : null,
-          time: timeStr,
-          firstName: data?.contact?.firstName || '',
-          lastName: data?.contact?.lastName || '',
-          email: data?.contact?.email || '',
-          phone: data?.contact?.phone || '',
-          street: data?.address?.line1 || '',
-          city: data?.address?.city || '',
-          state: data?.address?.state || '',
-          zip: data?.address?.zip || '',
-          accessNotes: data?.accessNotes || data?.notes || '',
-          cleanerNotes: data?.cleanerNotes || '',
-          recurrence: data?.recurrence || 'none',
-          promoCode: data?.promoCode || '',
-          agreePolicy: true, // already agreed once; keep true so edits don't block
-        };
-        if (!didCancel) setForm(prefill);
-      } catch (e) {
-        console.error(e);
-        toast({
-          variant: 'destructive',
-          title: 'Could not load booking',
-          description: String(e?.message || e),
-        });
-        setIsEditing(false);
-      }
-    }
-    load();
-    return () => {
-      didCancel = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bookingId]);
-
-  // Load saved addresses for dropdown (new bookings only)
-  useEffect(() => {
-    const u = auth.currentUser;
-    if (!u) return;
-    if (isEditing) return; // don't override address when editing an existing booking
-
-    async function loadAddresses() {
-      try {
-        setLoadingAddresses(true);
-        const addrCol = collection(db, 'profiles', u.uid, 'addresses');
-        const snap = await getDocs(addrCol);
-        const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-        if (!rows.length) {
-          setAddressOptions([]);
-          return;
-        }
-        // sort by sortOrder if present
-        rows.sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
-        setAddressOptions(rows);
-
-        let def = rows.find((a) => a.isDefault);
-        if (!def) def = rows[0];
-
-        if (def) {
-          setSelectedAddressId(def.id);
-          setForm((prev) => ({
-            ...prev,
-            street: def.street || '',
-            city: def.city || '',
-            state: def.state || '',
-            zip: def.zip || '',
-          }));
-        }
-      } catch (err) {
-        console.warn('Failed to load saved addresses', err);
-      } finally {
-        setLoadingAddresses(false);
-      }
-    }
-
-    loadAddresses();
-  }, [isEditing]);
-
-  // PREFILL from profile + address documents (keep initial defaults on first render)
-  useEffect(() => {
-    const u = auth.currentUser;
-    if (!u) return;
-    if (isEditing) return; // don't override when editing an existing booking
-
-    let cancelled = false;
-    async function loadProfileAndAddress() {
-      try {
-        setLoadingProfile(true);
-        const p = await readProfile(u.uid);
-        const a = await getAddress(u.uid);
-        if (cancelled) return;
-        setProfileData(p || null);
-        setAddressData(a || null);
-
-        // Build name parts safely
-  // Prefer canonical `name`; legacy `fullName` removed after migration.
-  const nameSource = (p && (p.name || p.firstName || '')) || '';
-        const parts = String(nameSource || '').trim().split(/\s+/).filter(Boolean);
-        const firstName = parts.length ? parts.shift() : '';
-        const lastName = parts.length ? parts.join(' ') : '';
-
-        // Only fill fields that are currently empty (preserve any user-typed values)
-        setForm((prev) => {
-          const pick = (prevVal, newVal) => {
-            if (prevVal !== undefined && prevVal !== null && String(prevVal).trim() !== '') return prevVal;
-            return newVal || '';
-          };
-
-          return {
-            ...prev,
-            firstName: pick(prev.firstName, firstName),
-            lastName: pick(prev.lastName, lastName),
-            email: pick(prev.email, (p && (p.email || p.emailLower || p.contact?.email))),
-            phone: pick(prev.phone, (p && (p.phone || p.phoneNumber || p.primaryPhone || p.contact?.phone))),
-            street: pick(prev.street, (a && (a.street || a.line1))),
-            city: pick(prev.city, (a && a.city)),
-            state: pick(prev.state, (a && a.state)),
-            zip: pick(prev.zip, (a && (a.zip || a.postal))),
-          };
-        });
-      } catch (err) {
-        console.warn('Failed to load profile/address for prefill', err);
-      } finally {
-        if (!cancelled) setLoadingProfile(false);
-      }
-    }
-
-    loadProfileAndAddress();
+      });
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isEditing]);
+  }, [bookingId, user]);
+
+  // Prefill contact + saved addresses (new bookings)
+  useEffect(() => {
+    if (!user || isEditing) return;
+    let cancelled = false;
+    setLoadingAddresses(true);
+    Promise.all([apiGet('/me/profile'), apiGet('/me/addresses')])
+      .then(([{ profile }, { addresses }]) => {
+        if (cancelled) return;
+        const [first, ...rest] = String(profile.name || '').trim().split(/\s+/).filter(Boolean);
+        const def = addresses.find((a) => a.isDefault) || addresses[0];
+        setAddressOptions(addresses);
+        setForm((prev) => ({
+          ...prev,
+          email: profile.email || user.email,
+          firstName: prev.firstName || first || '',
+          lastName: prev.lastName || rest.join(' '),
+          phone: prev.phone || profile.phone || '',
+          ...(def && !prev.street
+            ? { street: def.line1, city: def.city, state: def.state, zip: def.zip, accessNotes: prev.accessNotes || def.accessInstructions || '' }
+            : {}),
+        }));
+        if (def) setSelectedAddressId(String(def.id));
+      })
+      .catch(() => {})
+      .finally(() => !cancelled && setLoadingAddresses(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [user, isEditing]);
 
   const handleFormChange = (field, value) => {
     setForm((prev) => {
       const next = { ...prev, [field]: value };
-      sessionStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({
-          ...next,
-          date: next.date ? next.date.toISOString() : null,
-        })
-      );
+      try {
+        const { email, agreePolicy, time, ...persist } = next;
+        sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ ...persist, date: next.date ? next.date.toISOString() : null }));
+      } catch {
+        /* storage unavailable */
+      }
       return next;
     });
   };
 
   const handleAddonToggle = (addonId) => {
-    const newAddons = form.addons.includes(addonId)
-      ? form.addons.filter((id) => id !== addonId)
-      : [...form.addons, addonId];
+    const newAddons = form.addons.includes(addonId) ? form.addons.filter((id) => id !== addonId) : [...form.addons, addonId];
     handleFormChange('addons', newAddons);
   };
 
-  // Pricing/estimate calculation
-  const calculateEstimate = useCallback(() => {
-    const service = getServiceBySlug(form.service) || getServiceBySlug('residential-cleaning');
-    const pricing = service.pricing;
-    let base = 0,
-      sizeCost = 0,
-      conditionMultiplier = 1,
-      petsCost = 0,
-      addonsCost = 0,
-      frequencyDiscount = 0,
-      duration = 0;
+  const quoteInput = useMemo(() => {
+    const isOffice = form.service === 'office-cleaning';
+    return {
+      serviceSlug: form.service,
+      bedrooms: isOffice ? 0 : Number(form.bedrooms) || 0,
+      bathrooms: isOffice ? 0 : Number(form.bathrooms) || 0,
+      sqft: isOffice || form.sizeMode === 'sqft' ? Number(form.sqft) || 0 : 0,
+      condition: form.condition,
+      pets: form.pets === 'yes',
+      addons: form.addons,
+      frequency: form.frequency,
+      promoCode: promoApplied ? form.promoCode.trim() : '',
+    };
+  }, [form.service, form.bedrooms, form.bathrooms, form.sqft, form.sizeMode, form.condition, form.pets, form.addons, form.frequency, form.promoCode, promoApplied]);
 
-    if (pricing.sqftRate) {
-      base = pricing.basePrice;
-      sizeCost = form.sqft * pricing.sqftRate;
-      duration = form.sqft / pricing.sqftPerHour;
-    } else {
-      base = pricing.basePrice;
-      sizeCost =
-        form.bedrooms * ESTIMATE_RULES.bedroomPrice +
-        form.bathrooms * ESTIMATE_RULES.bathroomPrice;
-      duration =
-        (form.bedrooms * ESTIMATE_RULES.bedroomDurationHours +
-          form.bathrooms * ESTIMATE_RULES.bathroomDurationHours +
-          ESTIMATE_RULES.baseDurationHours) *
-        pricing.durationMultiplier;
-    }
-
-    conditionMultiplier =
-      ESTIMATE_RULES.conditionMultipliers[form.condition] || 1;
-    duration *=
-      ESTIMATE_RULES.conditionDurationMultipliers[form.condition] || 1;
-
-    if (form.pets === 'yes') {
-      petsCost = ESTIMATE_RULES.petPrice;
-      duration += ESTIMATE_RULES.petDurationHours;
-    }
-
-    form.addons.forEach((addonId) => {
-      const addon = addons.find((a) => a.id === addonId);
-      if (addon) {
-        addonsCost += addon.price;
-        duration += addon.durationHours;
-      }
-    });
-
-    const subtotalBeforeCondition = base + sizeCost + petsCost + addonsCost;
-    const conditionAdjustedTotal = subtotalBeforeCondition * conditionMultiplier;
-
-    const freq = getFrequencyById(form.frequency);
-    if (freq && service.recurringDiscountEligible) {
-      frequencyDiscount = conditionAdjustedTotal * freq.discount;
-    }
-
-    // Apply promo AFTER frequency discount
-    const afterFreq = conditionAdjustedTotal - frequencyDiscount;
-    const promoDiscount =
-      promoApplied && form.promoCode?.toUpperCase() === 'CLEAN10' ? afterFreq * 0.1 : 0;
-
-    const total = Math.max(0, afterFreq - promoDiscount);
-
-    setEstimate({
-      base,
-      sizeCost,
-      conditionCost: conditionAdjustedTotal - subtotalBeforeCondition,
-      petsCost,
-      addonsCost,
-      subtotal: conditionAdjustedTotal,
-      discount: frequencyDiscount,
-      promoDiscount,
-      total,
-      duration: Math.round(duration * 2) / 2,
-    });
-  }, [form, promoApplied]);
-
+  // Live estimate from the server (debounced)
   useEffect(() => {
-    calculateEstimate();
-  }, [calculateEstimate]);
+    let cancelled = false;
+    const t = setTimeout(() => {
+      apiPost('/quote', quoteInput)
+        .then((q) => {
+          if (!cancelled) {
+            setQuote(q);
+            setQuoteError('');
+          }
+        })
+        .catch((e) => {
+          if (cancelled) return;
+          setQuoteError(e.message);
+          if (e.field === 'promoCode') setPromoApplied(false);
+        });
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [quoteInput]);
 
-  // Promo
-  const handleApplyPromoCode = () => {
-    const code = (form.promoCode || '').trim().toUpperCase();
+  const handleApplyPromoCode = async () => {
+    const code = (form.promoCode || '').trim();
     if (!code) {
       toast({ title: 'Enter a code to apply' });
       return;
     }
-    if (promoApplied) {
-      toast({
-        title: 'Promo already applied',
-        description: 'Remove or change code to re-apply.',
-      });
-      return;
-    }
-    if (code === 'CLEAN10') {
+    try {
+      await apiPost('/quote', { ...quoteInput, promoCode: code });
       setPromoApplied(true);
-      toast({
-        title: 'Promo Code Applied!',
-        description: '10% off your estimate has been applied.',
-      });
-    } else {
+      toast({ title: 'Promo code applied!' });
+    } catch (e) {
       setPromoApplied(false);
-      toast({ title: 'Invalid Promo Code', variant: 'destructive' });
+      toast({ title: 'Invalid promo code', description: e.message, variant: 'destructive' });
     }
   };
 
-  // Watch date → load day availability from server
+  const durationMinutes = isEditing && loadedBooking ? loadedBooking.durationMinutes : quote?.durationMinutes || 0;
+
+  // Month view: grey out unavailable dates
+  const [visibleMonth, setVisibleMonth] = useState(() => new Date());
   useEffect(() => {
-    handleFormChange('time', '');
+    if (!durationMinutes) return;
+    const month = format(visibleMonth, 'yyyy-MM');
+    apiGet(`/availability/month${qs({ month, durationMinutes })}`)
+      .then(({ days }) => setUnavailableDates(new Set(days.filter((d) => !d.available).map((d) => d.date))))
+      .catch(() => setUnavailableDates(new Set()));
+  }, [visibleMonth, durationMinutes]);
 
-    if (!form.date) {
-      setDayAvailability(emptyDayAvailability());
+  // Day availability
+  useEffect(() => {
+    setForm((prev) => ({ ...prev, time: '' }));
+    if (!form.date || !durationMinutes) {
+      setDay(null);
       setAvailabilityStatus('idle');
-      setAvailabilityError('');
       return;
     }
-    if (OPERATING_RULES.SUN_CLOSED && isSunday(form.date)) {
-      setDayAvailability(emptyDayAvailability());
-      setAvailabilityStatus('loaded');
-      setAvailabilityError('');
-      return;
-    }
-
+    let cancelled = false;
     setLoadingDay(true);
     setAvailabilityStatus('loading');
     setAvailabilityError('');
-    const dateKey = format(form.date, 'yyyy-MM-dd');
-    const durationHours = Number.isFinite(estimate.duration) && estimate.duration > 0 ? estimate.duration : 2;
-    const durationMinutes = Math.round(durationHours * 60);
-
-    getDayAvailability(
-      dateKey,
-      getTimeOptionsForDate(form.date),
-      SLOT_CAPACITY,
-      DAILY_CAPACITY,
-      durationMinutes,
-      isEditing ? bookingId : null
-    )
-      .then((result) => {
-        setDayAvailability({
-          ...emptyDayAvailability(),
-          ...result,
-          dateKey,
-        });
+    apiGet(`/availability${qs({ date: format(form.date, 'yyyy-MM-dd'), durationMinutes, booking: isEditing ? bookingId : '' })}`)
+      .then((d) => {
+        if (cancelled) return;
+        setDay(d);
         setAvailabilityStatus('loaded');
-        setLoadingDay(false);
       })
-      .catch((err) => {
-        console.error('Failed to fetch day availability:', err);
-        setLoadingDay(false);
+      .catch(() => {
+        if (cancelled) return;
+        setDay(null);
         setAvailabilityStatus('failed');
-        setAvailabilityError("We couldn't verify availability right now. Please try again.");
-        setDayAvailability({
-          ...emptyDayAvailability(),
-          dateKey,
-          fullyBooked: true,
-          blockedSlots: getTimeOptionsForDate(form.date),
-          unavailableReason: 'lookup_failed',
-        });
-      });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [form.date, estimate.duration, isEditing, bookingId, emptyDayAvailability]);
+        setAvailabilityError("We couldn't check availability right now. Please try again.");
+      })
+      .finally(() => !cancelled && setLoadingDay(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [form.date, durationMinutes, isEditing, bookingId]);
 
-  // Disabled times from capacity + operating rules
-  const disabledTimes = useMemo(() => {
-    if (!form.date) return new Set();
-    if (OPERATING_RULES.SUN_CLOSED && isSunday(form.date)) {
-      return new Set(getTimeOptionsForDate(form.date));
-    }
-    if (availabilityStatus !== 'loaded') {
-      return new Set(getTimeOptionsForDate(form.date));
-    }
-    // Use server-provided blocked slots
-    if (dayAvailability.fullyBooked) {
-      return new Set(getTimeOptionsForDate(form.date));
-    }
-    // Return blocked slots from server (no client-side overlap calculation)
-    return new Set(dayAvailability.blockedSlots);
-  }, [form.date, dayAvailability, availabilityStatus]);
+  const timeOptionsForUi = useMemo(() => (day?.slots || []).filter((s) => s.available).map((s) => s.label), [day]);
+  const slotByLabel = useMemo(() => Object.fromEntries((day?.slots || []).map((s) => [s.label, s])), [day]);
 
-    // Only show times that are actually available (capacity + operating rules)
-  const timeOptionsForUi = useMemo(() => {
-    if (!form.date) return [];
-    if (availabilityStatus !== 'loaded') return [];
-    const base = getTimeOptionsForDate(form.date); // already respects Sunday / Sat rules
-    return base.filter((t) => !disabledTimes.has(t));
-  }, [form.date, disabledTimes, availabilityStatus]);
-
-  // Validation
-  const validateForm = useCallback(() => {
+  const validateForm = () => {
     const next = {};
-    const required = [
-      'firstName',
-      'lastName',
-      'email',
-      'phone',
-      'street',
-      'city',
-      'state',
-      'zip',
-      'date',
-      'time',
-    ];
-    required.forEach((k) => {
-      if (!form[k] || (typeof form[k] === 'string' && !form[k].trim())) {
-        next[k] = 'Required';
-      }
+    ['firstName', 'lastName', 'phone', 'street', 'city', 'state', 'zip', 'date', 'time'].forEach((k) => {
+      if (!form[k] || (typeof form[k] === 'string' && !form[k].trim())) next[k] = 'Required';
     });
-
-    if (!form.agreePolicy) {
-      next.agreePolicy = 'You must agree to the estimate and deposit policy.';
-    }
-
-    if (form.date && OPERATING_RULES.SUN_CLOSED && isSunday(form.date)) {
-      next.date = 'We are closed on Sundays.';
-    }
-
-    if (form.date && form.time) {
-      const allowed = getTimeOptionsForDate(form.date).filter(
-        (t) => !disabledTimes.has(t)
-      );
-      if (!allowed.includes(form.time)) {
-        next.time = 'This time is not available on the selected day.';
-      }
-    }
-
-    if (form.date && availabilityStatus !== 'loaded') {
-      next.date = availabilityError || "We couldn't verify availability right now. Please try again.";
-    }
-
-
-    if (form.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) {
-      next.email = 'Enter a valid email.';
-    }
-    if (form.phone && !/^[0-9\-+() ]{7,}$/.test(form.phone)) {
-      next.phone = 'Enter a valid phone.';
-    }
-    if (form.zip && !/^\d{5}(-\d{4})?$/.test(form.zip)) {
-      next.zip = 'Enter a valid ZIP.';
-    }
-
+    if (!form.agreePolicy) next.agreePolicy = 'You must agree to the estimate and deposit policy.';
+    if (form.phone && String(form.phone).replace(/\D/g, '').replace(/^1(?=\d{10}$)/, '').length !== 10) next.phone = 'Enter a valid 10-digit phone number.';
+    if (form.zip && !/^\d{5}(-\d{4})?$/.test(form.zip)) next.zip = 'Enter a valid ZIP.';
+    if (form.time && !timeOptionsForUi.includes(form.time)) next.time = 'This time is no longer available.';
     setErrors(next);
     return Object.keys(next).length === 0;
-  }, [form, disabledTimes, availabilityError, availabilityStatus]);
+  };
 
   // Submit
   const handleProceedToCheckout = async () => {
-    console.log("handleProceedToCheckout start", { isSubmitting, isEditing, bookingId });
     if (isSubmitting) return;
-
-    // 🔒 Require login
-    const currentUser = auth.currentUser;
-    if (!currentUser) {
-      toast({
-        variant: "destructive",
-        title: "Please sign in to book",
-        description: "Log in or create an account, then try again.",
-      });
-      navigate(`/auth?redirect=${encodeURIComponent("/book")}`);
+    if (!user) {
+      navigate(`/auth?redirect=${encodeURIComponent('/book')}`);
       return;
     }
-
-    const ok = validateForm();
-    if (!ok) {
-      toast({
-        variant: "destructive",
-        title: "Please fix the highlighted fields",
-        description: "We need a few details to lock in your booking.",
-      });
+    if (!validateForm()) {
+      toast({ variant: 'destructive', title: 'Please fix the highlighted fields', description: 'We need a few details to lock in your booking.' });
       return;
     }
-
-    const normalized = normalizePhone(form.phone);
-    if (!normalized || normalized.replace(/\D/g, "").length < 10) {
-      // Mirror your validateForm UX: show an error and stop submission
-      setErrors((prev) => ({ ...prev, phone: "Enter a valid phone number." }));
-      toast({
-        variant: "destructive",
-        title: "Invalid phone number",
-        description: "Please enter a valid phone number (at least 10 digits).",
-      });
-      return;
-    }
-
-    const emailLower = (form.email || "").trim().toLowerCase();
-
-    if (availabilityStatus !== 'loaded') {
-      toast({
-        variant: 'destructive',
-        title: 'Availability check required',
-        description: availabilityError || "We couldn't verify availability right now. Please try again.",
-      });
-      setIsSubmitting(false);
-      return;
-    }
-
-    // Check if day is fully booked using server availability data
-    if (dayAvailability.fullyBooked) {
-      toast({
-        variant: "destructive",
-        title: "Day fully booked",
-        description: "Please pick another date. This one has reached capacity.",
-      });
-      return;
-    }
-
-    if (disabledTimes.has(form.time)) {
-      toast({
-        variant: "destructive",
-        title: "Time no longer available",
-        description: "Please choose another time slot.",
-      });
-      return;
-    }
-
-    const startDate = combineDateAndTime(form.date, form.time);
-    if (!startDate) {
-      toast({
-        variant: "destructive",
-        title: "Pick a valid date and time",
-        description: "Please select both date and time.",
-      });
-      return;
-    }
-
-    const durationHours =
-      Number.isFinite(estimate.duration) && estimate.duration > 0 ? estimate.duration : 2;
-    const endDate = new Date(startDate.getTime() + durationHours * 60 * 60 * 1000);
-    const dateKey = format(startDate, "yyyy-MM-dd");
-
-    const fullName = `${(form.firstName || "").trim()} ${(form.lastName || "").trim()}`.trim();
-
-    const recurrenceValue =
-      form.recurrence && form.recurrence !== "none" ? form.recurrence : null;
-
+    const slot = slotByLabel[form.time];
     setIsSubmitting(true);
     try {
-      // 🔍 MANDATORY conflict check via Cloud Function (server-side with admin privileges)
-      const conflictCheck = await checkConflictsTransactional(
-        startDate,
-        endDate,
-        isEditing ? bookingId : null
-      );
-
-      if (conflictCheck.conflict) {
-        toast({
-          variant: "destructive",
-          title: "Time conflict",
-          description: `That slot overlaps an existing booking: ${conflictCheck.with}. Please choose another time.`,
-        });
-        setIsSubmitting(false);
-        return; // ABORT: do not proceed with any Firestore write
-      }
-
-      // 🔁 New vs repeat client check (this uses userId/email, so rules allow it)
-      const bookingDraft = {
-        serviceSlug: form.service,
-        frequency: form.frequency,
-        propertyType: form.propertyType,
-        sqft: form.sqft,
-        bedrooms: form.bedrooms,
-        bathrooms: form.bathrooms,
-        condition: form.condition,
-        pets: form.pets === "yes",
-        addons: form.addons,
-        contact: {
-          name: fullName,
-          firstName: (form.firstName || "").trim(),
-          lastName: (form.lastName || "").trim(),
-          email: form.email,
-          phone: normalizePhone(form.phone),
-          phoneRaw: form.phone || "",
-          emailLower,
-        },
-        address: {
-          line1: form.street,
-          city: form.city,
-          state: form.state,
-          zip: form.zip,
-        },
-        // Notes – keep legacy notes for admin views, but store split fields too
-        notes: form.cleanerNotes || form.accessNotes || "",
-        accessNotes: form.accessNotes || "",
-        cleanerNotes: form.cleanerNotes || "",
-        // Recurring metadata (single booking for now)
-        recurrence: recurrenceValue,
-        seriesId: recurrenceValue ? loadedBooking?.seriesId || null : null,
-        startAt: startDate.toISOString(),
-        scheduledAt: startDate.toISOString(),
-        timeLabel: form.time,
-        dateKey,
-        promoCode: promoApplied ? form.promoCode || null : null,
-        agreePolicy: form.agreePolicy,
-        // Normalized lookup fields for client portal matching
-        contactEmailLower: emailLower || null,
-        contactPhoneNormalized: (() => {
-          const pn = normalizePhone(form.phone);
-          if (pn.length === 11 && pn.startsWith("1")) return pn.slice(1);
-          return pn || null;
-        })(),
-      };
-
       if (isEditing && bookingId) {
-        const rescheduleBooking = httpsCallable(functions, "rescheduleBooking");
-        await rescheduleBooking({
-          bookingId,
-          startAt: startDate.toISOString(),
-          timeLabel: form.time,
-          accessNotes: form.accessNotes || "",
-          cleanerNotes: form.cleanerNotes || "",
-          notes: form.cleanerNotes || form.accessNotes || "",
-        });
-        navigate(`/confirm?bookingId=${bookingId}`);
+        await apiPost(`/bookings/${encodeURIComponent(bookingId)}/reschedule`, { date: format(form.date, 'yyyy-MM-dd'), time: slot.time });
+        toast({ title: 'Appointment rescheduled', description: 'We emailed you the new details.' });
+        navigate(`/confirm?booking=${encodeURIComponent(bookingId)}&rescheduled=1`);
         return;
       }
-
-      // If the user is logged in, sync this booking address to their profile
-      try {
-        const u = auth.currentUser;
-        if (u && u.uid) {
-          // Use the profileModel helper which will normalize the address
-          await updateProfileAddressFromServiceAddress(u.uid, {
-            line1: form.street || form.address || '',
-            line2: '',
-            city: form.city || '',
-            state: form.state || '',
-            zip: form.zip || '',
-          });
-        }
-      } catch (syncErr) {
-        console.warn('Could not sync booking address to profile', syncErr);
-      }
-
-      if (!currentUser?.uid) {
-        throw new Error("You must be signed in to pay your deposit online.");
-      }
-
-      // New paid flow: backend owns booking creation + Stripe checkout session together.
-      const checkoutRequestId =
-        checkoutRequestIdRef.current ||
-        (globalThis.crypto?.randomUUID
-          ? globalThis.crypto.randomUUID()
-          : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
-      checkoutRequestIdRef.current = checkoutRequestId;
-
-      try {
-        const funcs = await import("firebase/functions");
-        const { getFunctions, httpsCallable } = funcs;
-        const functionsClient = getFunctions(auth?.app || undefined);
-        const createBookingAndCheckout = httpsCallable(
-          functionsClient,
-          "createBookingAndStripeCheckout"
-        );
-
-        const resp = await createBookingAndCheckout({
-          requestId: checkoutRequestId,
-          bookingData: bookingDraft,
-          customerEmail: form.email,
-          customerName: fullName,
-        });
-
-        const result = resp?.data || null;
-        if (result?.url) {
-          window.location.href = result.url;
-          return;
-        }
-
-        throw new Error("Could not create payment session.");
-      } catch (fnErr) {
-        console.error("Failed to create Stripe session", fnErr);
-        toast({
-          variant: "destructive",
-          title: "Payment setup error",
-          description:
-            "Could not initiate payment. No paid booking was created. Please try again.",
-        });
-        return;
-      }
-    } catch (err) {
-      console.error("Booking failed:", err);
-      toast({
-        variant: "destructive",
-        title: err?.message?.includes("conflict") || err?.message?.includes("overlap") 
-          ? "Time conflict" 
-          : "Could not save booking",
-        description: err?.message?.includes("conflict") || err?.message?.includes("overlap")
-          ? String(err?.message || err)
-          : "We couldn't save your booking. No booking was created. Please try again.",
+      const res = await apiPost('/bookings', {
+        requestId: requestIdRef.current,
+        ...quoteInput,
+        propertyType: form.propertyType,
+        date: format(form.date, 'yyyy-MM-dd'),
+        time: slot.time,
+        contact: { name: `${form.firstName.trim()} ${form.lastName.trim()}`.trim(), email: form.email || user.email, phone: form.phone },
+        address: { line1: form.street, city: form.city, state: form.state, zip: form.zip },
+        accessNotes: form.accessNotes,
+        cleanerNotes: form.cleanerNotes,
+        saveAddress: saveAddress && !selectedAddressId,
       });
+      try {
+        sessionStorage.removeItem(STORAGE_KEY);
+      } catch {
+        /* ignore */
+      }
+      if (res.checkoutUrl) {
+        window.location.href = res.checkoutUrl;
+        return;
+      }
+      navigate(`/confirm?booking=${encodeURIComponent(res.booking.id)}`);
+    } catch (err) {
+      requestIdRef.current = newRequestId(); // a failed attempt can be retried with a fresh request
+      if (err.field && FIELD_MAP[err.field]) setErrors((prev) => ({ ...prev, [FIELD_MAP[err.field]]: err.message }));
+      if (err.code === 'already-exists' || err.code === 'resource-exhausted') {
+        setDay(null);
+        setForm((prev) => ({ ...prev, date: new Date(prev.date) })); // re-fetch availability
+      }
+      toast({ variant: 'destructive', title: err.code === 'already-exists' ? 'That time was just taken' : 'Could not save booking', description: err.message });
     } finally {
       setIsSubmitting(false);
     }
@@ -1032,12 +518,14 @@ const BookingPage = () => {
                         id="email"
                         type="email"
                         value={form.email}
-                        onChange={(e) => handleFormChange('email', e.target.value)}
-                        aria-invalid={!!errors.email}
-                        required
+                        readOnly
+                        aria-describedby="email-help"
                         autoComplete="email"
-                        className="bg-white"
+                        className="bg-plum/5"
                       />
+                      <p id="email-help" className="text-xs text-plum/60 mt-1">
+                        Confirmations go to your account email. Change it in your account settings.
+                      </p>
                       {errors.email && (
                         <p className="text-xs text-red-600 mt-1">{errors.email}</p>
                       )}
@@ -1052,9 +540,10 @@ const BookingPage = () => {
                         value={selectedAddressId || ''}
                         onValueChange={(v) => {
                           setSelectedAddressId(v);
-                          const addr = addressOptions.find((a) => a.id === v);
+                          const addr = addressOptions.find((a) => String(a.id) === v);
                           if (addr) {
-                            handleFormChange('street', addr.street || '');
+                            handleFormChange('street', addr.line1 || '');
+                            handleFormChange('accessNotes', form.accessNotes || addr.accessInstructions || '');
                             handleFormChange('city', addr.city || '');
                             handleFormChange('state', addr.state || '');
                             handleFormChange('zip', addr.zip || '');
@@ -1070,12 +559,12 @@ const BookingPage = () => {
                         </SelectTrigger>
                         <SelectContent className={selectContentClass}>
                           {addressOptions.map((a) => {
-                            const nickname = a.nickname || a.type || 'Home';
-                            const short = [a.street, a.city].filter(Boolean).join(', ');
+                            const nickname = a.label || 'Home';
+                            const short = [a.line1, a.city].filter(Boolean).join(', ');
                             return (
                               <SelectItem
                                 key={a.id}
-                                value={a.id}
+                                value={String(a.id)}
                                 className={selectItemClass}
                               >
                                 {nickname} — {short}
@@ -1209,6 +698,12 @@ const BookingPage = () => {
                   </div>
 
                   {/* Access notes */}
+                  {!isEditing && !selectedAddressId && (
+                    <label className="flex items-center gap-2 text-sm text-plum/80">
+                      <Checkbox checked={saveAddress} onCheckedChange={(v) => setSaveAddress(!!v)} />
+                      Save this address to my account
+                    </label>
+                  )}
                   <div>
                     <Label htmlFor="accessNotes">Access Notes (gate codes, parking, etc.)</Label>
                     <Textarea
@@ -1412,13 +907,11 @@ const BookingPage = () => {
                       mode="single"
                       selected={form.date}
                       onSelect={(d) => handleFormChange('date', d)}
+                      onMonthChange={setVisibleMonth}
                       disabled={(date) => {
                         const today = new Date();
                         today.setHours(0, 0, 0, 0);
-                        const isPast = date < today;
-                        const isClosedSun =
-                          OPERATING_RULES.SUN_CLOSED && isSunday(date);
-                        return isPast || isClosedSun;
+                        return date < today || unavailableDates.has(format(date, 'yyyy-MM-dd'));
                       }}
                       className="rounded-md border bg-white"
                       classNames={{
@@ -1468,8 +961,8 @@ const BookingPage = () => {
                             ? 'Checking availability…'
                             : availabilityStatus === 'failed'
                             ? "We couldn't verify availability right now. Please try again."
-                            : dayAvailability.unavailableReason === 'blackout'
-                            ? 'This date is blocked and cannot be booked. Please choose another date.'
+                            : day && !day.open
+                            ? 'We are closed on this date. Please choose another date.'
                             : 'No time slots are available on this day. Please choose another date.'}
                         </div>
                       )}
@@ -1516,43 +1009,26 @@ const BookingPage = () => {
                   <CardTitle className="text-plum">Your Estimate</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-2">
-                  {Object.entries(estimate).map(([key, value]) => {
-                    const labels = {
-                      base: 'Base Service',
-                      sizeCost: 'Size',
-                      petsCost: 'Pet Fee',
-                      addonsCost: 'Add-ons',
-                      conditionCost: 'Condition',
-                    };
-                    if (value > 0 && labels[key]) {
-                      return (
-                        <div key={key} className="flex justify-between text-sm">
-                          <span className="text-plum/80">{labels[key]}</span>
-                          <span>${value.toFixed(2)}</span>
-                        </div>
-                      );
-                    }
-                    return null;
-                  })}
+                  {estimate.lineItems.filter((li) => li.amount >= 0).map((li) => (
+                    <div key={li.label + li.detail} className="flex justify-between text-sm">
+                      <span className="text-plum/80">
+                        {li.label}
+                        {li.detail ? <span className="block text-xs text-plum/60">{li.detail}</span> : null}
+                      </span>
+                      <span>${li.amount.toFixed(2)}</span>
+                    </div>
+                  ))}
+                  {quoteError && <p className="text-xs text-red-600" role="alert">{quoteError}</p>}
                   <div className="border-t border-gold/30 my-2 pt-2 space-y-2">
-                    {estimate.discount > 0 && (
-                      <div className="flex justify-between text-sm font-semibold text-green-700">
+                    {estimate.lineItems.filter((li) => li.amount < 0).map((li) => (
+                      <div key={li.label + li.detail} className="flex justify-between text-sm font-semibold text-green-700">
                         <span className="flex items-center">
                           <Tag className="h-4 w-4 mr-1" />
-                          Frequency Discount
+                          {li.label}{li.detail ? ` (${li.detail})` : ''}
                         </span>
-                        <span>−${estimate.discount.toFixed(2)}</span>
+                        <span>−${Math.abs(li.amount).toFixed(2)}</span>
                       </div>
-                    )}
-                    {estimate.promoDiscount > 0 && (
-                      <div className="flex justify-between text-sm font-semibold text-green-700">
-                        <span className="flex items-center">
-                          <Tag className="h-4 w-4 mr-1" />
-                          Promo (CLEAN10)
-                        </span>
-                        <span>−${estimate.promoDiscount.toFixed(2)}</span>
-                      </div>
-                    )}
+                    ))}
                     <div className="flex justify-between font-bold text-plum mt-1">
                       <span className="flex items-center text-lg">
                         <Clock className="h-5 w-5 mr-2 text-gold" />
@@ -1613,25 +1089,14 @@ const BookingPage = () => {
                             scope.
                           </li>
                           <li>
-                            A <span className="font-semibold">$50 non-refundable deposit</span> is required to hold your appointment. It is
-                            applied to your final balance at service. If you pay by card, Stripe adds a separate processing fee at checkout.
+                            A <span className="font-semibold">${(rules?.depositAmount ?? 50).toFixed(0)} non-refundable deposit</span> is paid online to hold your appointment. It is
+                            applied to your final balance. Card payments include a processing fee shown at checkout.
                           </li>
                           <li>
-                            <span className="font-semibold">Timing:</span> once we confirm
-                            your date and time, the deposit is due within 24 hours or the
-                            slot may be released.
+                            <span className="font-semibold">Timing:</span> your time slot is held for {rules?.holdMinutes ?? 30} minutes while you complete the deposit payment.
                           </li>
                           <li>
-                            <span className="font-semibold">Rescheduling:</span> one
-                            reschedule is allowed with at least 48 hours notice. The
-                            deposit transfers to the new date.
-                          </li>
-                          <li>
-                            <span className="font-semibold">
-                              Cancellations and no-shows:
-                            </span>{' '}
-                            canceling within 48 hours of the appointment or not being
-                            present at the scheduled time forfeits the deposit.
+                            <span className="font-semibold">Rescheduling and cancellations:</span> you can reschedule or cancel from your account up to {rules?.changeCutoffHours ?? 24} hours before your appointment. Within {rules?.changeCutoffHours ?? 24} hours, please contact us; late cancellations or lock-outs may forfeit the deposit.
                           </li>
                           <li>
                             If the size or condition differs from what was submitted, the
@@ -1662,13 +1127,10 @@ const BookingPage = () => {
                   </div>
                   <Button
                     type="button"
-                    onClick={() => {
-                      console.log("ProceedToBook clicked");
-                      handleProceedToCheckout();
-                    }}
+                    onClick={handleProceedToCheckout}
                     size="lg"
                     className="w-full bg-gold hover:bg-gold/90 text-white rounded-full disabled:opacity-60 flex items-center justify-center gap-2"
-                    disabled={isSubmitting}
+                    disabled={isSubmitting || !quote}
                   >
                     {isSubmitting ? (
                       <>

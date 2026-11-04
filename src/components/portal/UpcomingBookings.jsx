@@ -24,8 +24,8 @@ import logoPrimary from "@/assets/logo/logo-primary.png";
 /** Local date helpers */
 function toDate(tsLike) {
   if (!tsLike) return null;
-  if (typeof tsLike.toDate === "function") return tsLike.toDate();
-  return new Date(tsLike);
+  const d = tsLike instanceof Date ? tsLike : new Date(tsLike);
+  return Number.isNaN(d.getTime()) ? null : d;
 }
 
 function formatDate(tsLike) {
@@ -166,7 +166,7 @@ export default function UpcomingBookings({
     const ics = buildIcsFromBooking(activeBooking);
     const blob = new Blob([ics], { type: "text/calendar;charset=utf-8" });
     const url = URL.createObjectURL(blob);
-    const orderCode = `CI-${(activeBooking.id || "").slice(0, 5).toUpperCase()}`;
+    const orderCode = (activeBooking.invoiceNumber || activeBooking.id || "");
     const a = document.createElement("a");
     a.href = url;
     a.download = `${orderCode || "appointment"}-sanchez-services.ics`;
@@ -190,7 +190,7 @@ export default function UpcomingBookings({
 
     const b = activeBooking;
 
-    const orderCode = `CI-${(b.id || "").slice(0, 5).toUpperCase()}`;
+    const orderCode = (b.invoiceNumber || b.id || "");
 
     const propertyType = getBookingField(b, ["propertyType", "homeType"]);
     const bedrooms = getBookingField(b, ["bedrooms", "numBedrooms"], "—");
@@ -551,7 +551,7 @@ export default function UpcomingBookings({
                   }
                 }
 
-                const showDepositRequired = depositDue > 0 && !isRepeatClient;
+                const showDepositRequired = depositDue > 0;
 
                 const isConfirming = confirmCancelId === b.id;
 
@@ -618,22 +618,34 @@ export default function UpcomingBookings({
                             >
                               View details
                             </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="border-plum/40 text-plum hover:bg-plum/5"
-                              onClick={() => handleAction("reschedule", b)}
-                            >
-                              Reschedule
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="border-red-200 text-red-600 hover:bg-red-50"
-                              onClick={() => setConfirmCancelId(b.id)}
-                            >
-                              Cancel
-                            </Button>
+                            {(b.permissions?.canPayDeposit || b.permissions?.canPayBalance) && (
+                              <Button size="sm" className="bg-gold text-white hover:bg-gold/90" onClick={() => handleAction("pay", b)}>
+                                {b.permissions?.canPayDeposit ? "Pay deposit" : "Pay balance"}
+                              </Button>
+                            )}
+                            {b.permissions?.canReschedule && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="border-plum/40 text-plum hover:bg-plum/5"
+                                onClick={() => handleAction("reschedule", b)}
+                              >
+                                Reschedule
+                              </Button>
+                            )}
+                            {b.permissions?.canCancel && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="border-red-200 text-red-600 hover:bg-red-50"
+                                onClick={() => handleAction("cancel", b)}
+                              >
+                                Cancel
+                              </Button>
+                            )}
+                            {b.permissions?.changeBlockedReason && (
+                              <p className="w-full text-[11px] text-plum/70">{b.permissions.changeBlockedReason}</p>
+                            )}
                             {onViewPayments && (
                               <Button
                                 size="sm"

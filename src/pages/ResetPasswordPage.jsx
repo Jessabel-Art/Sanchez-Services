@@ -1,6 +1,5 @@
 // src/pages/ResetPasswordPage.jsx
-// Password reset landing page (/auth/reset). Firebase used to host this page; the PHP backend
-// emails a link here with ?token=. Also accepts Firebase's ?oobCode= for parity.
+// Password reset landing page (/auth/reset?token=...), linked from the reset email.
 import React, { useState } from 'react';
 import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from '@/components/ui/card';
@@ -8,12 +7,12 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useToast } from '@/components/ui/use-toast';
-import { confirmPasswordReset } from 'firebase/auth';
-import { auth } from '@/lib/firebase';
+import { useAuth } from '@/context/AuthContext';
 
 export default function ResetPasswordPage() {
   const [params] = useSearchParams();
-  const token = params.get('token') || params.get('oobCode') || '';
+  const token = params.get('token') || '';
+  const { confirmReset } = useAuth();
   const navigate = useNavigate();
   const { toast } = useToast();
   const [password, setPassword] = useState('');
@@ -34,7 +33,7 @@ export default function ResetPasswordPage() {
     }
     setBusy(true);
     try {
-      await confirmPasswordReset(auth, token, password);
+      await confirmReset(token, password);
       toast({ title: 'Password updated', description: 'You can now use your new password.' });
       navigate('/portal', { replace: true });
     } catch (err) {
