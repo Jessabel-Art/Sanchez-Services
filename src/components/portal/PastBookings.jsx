@@ -22,7 +22,7 @@ function formatDate(tsLike) {
   try {
     const d = toDate(tsLike);
     if (!d || Number.isNaN(d.getTime())) return "TBD";
-    return d.toLocaleDateString(undefined, {
+    return d.toLocaleDateString("en-US", { timeZone: "America/New_York", 
       year: "numeric",
       month: "long",
       day: "numeric",
@@ -35,7 +35,7 @@ function formatDate(tsLike) {
 function formatTime(tsLike) {
   const d = toDate(tsLike);
   if (!d || Number.isNaN(d.getTime())) return "";
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return d.toLocaleTimeString("en-US", { timeZone: "America/New_York",  hour: "2-digit", minute: "2-digit" });
 }
 
 function formatMoney(n) {
@@ -163,7 +163,7 @@ export default function PastBookings({
       b.depositDue != null ? formatMoney(b.depositDue) : null;
 
     const address =
-      b.address ||
+      b.addressText ||
       b.fullAddress ||
       (b.street && `${b.street}${b.city ? `, ${b.city}` : ""}`) ||
       "On file";

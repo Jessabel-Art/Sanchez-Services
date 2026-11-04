@@ -271,7 +271,7 @@ export default function ClientBookingsView() {
     const rows = filteredBookings.map((b) => {
       const start =
         b.startAt?.toDate?.() || b.scheduledAt?.toDate?.() || null;
-      const dateStr = start ? start.toLocaleString() : "";
+      const dateStr = start ? start.toLocaleString("en-US", { timeZone: "America/New_York" }) : "";
       const service = b.serviceName || b.service || "";
       const amt = Number(b.totalPrice || 0);
       const status = b.status || "";
@@ -498,7 +498,7 @@ export default function ClientBookingsView() {
                         ? start.toLocaleDateString()
                         : "—";
                       const timeStr = start
-                        ? start.toLocaleTimeString([], {
+                        ? start.toLocaleTimeString("en-US", { timeZone: "America/New_York", 
                             hour: "2-digit",
                             minute: "2-digit",
                           })
@@ -632,7 +632,7 @@ export default function ClientBookingsView() {
                         const start =
                           b.startAt?.toDate?.() || b.scheduledAt?.toDate?.();
                         const dateStr = start
-                          ? start.toLocaleString()
+                          ? start.toLocaleString("en-US", { timeZone: "America/New_York" })
                           : "—";
                         const status = b.status || "—";
                         const service =

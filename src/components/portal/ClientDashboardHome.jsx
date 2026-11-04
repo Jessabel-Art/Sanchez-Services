@@ -21,7 +21,7 @@ function toDate(tsLike) {
 function formatDate(tsLike) {
   const d = toDate(tsLike);
   if (!d || Number.isNaN(d.getTime())) return "TBD";
-  return d.toLocaleDateString(undefined, {
+  return d.toLocaleDateString("en-US", { timeZone: "America/New_York", 
     year: "numeric",
     month: "short",
     day: "numeric",
@@ -31,7 +31,7 @@ function formatDate(tsLike) {
 function formatTime(tsLike) {
   const d = toDate(tsLike);
   if (!d || Number.isNaN(d.getTime())) return "";
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return d.toLocaleTimeString("en-US", { timeZone: "America/New_York",  hour: "2-digit", minute: "2-digit" });
 }
 
 const money = (n) =>
@@ -116,6 +116,7 @@ export default function ClientDashboardHome({
     highestDepositAmount,
     hasPendingDeposit,
     hasReceivedDeposit,
+    avgRating,
   } = useMemo(() => {
     const now = new Date();
 
@@ -131,11 +132,15 @@ export default function ClientDashboardHome({
     });
     const lastCompleted = completedSorted[0] || null;
 
-    const totalBookings = allBookings?.length || 0;
+    // Count cleanings that actually happened (completed), not requests or upcoming visits.
+    const done = (allBookings || []).filter((b) => (b.rawStatus || b.status) === "completed");
+    const totalBookings = done.length;
+    const rated = (allBookings || []).filter((b) => Number(b.reviewRating) > 0);
+    const avgRating = rated.length ? (rated.reduce((s, b) => s + Number(b.reviewRating), 0) / rated.length).toFixed(1) : null;
 
     const thisYear = now.getFullYear();
     const yearBookings =
-      allBookings?.filter((b) => {
+      done.filter((b) => {
         const d = toDate(b.date || b.endAt || b.createdAt);
         return d && d.getFullYear() === thisYear;
       }).length || 0;
@@ -190,6 +195,7 @@ export default function ClientDashboardHome({
       highestDepositAmount,
       hasPendingDeposit,
       hasReceivedDeposit,
+      avgRating,
     };
   }, [upcomingBookings, completedBookings, allBookings]);
 
@@ -247,7 +253,7 @@ export default function ClientDashboardHome({
         <DashboardHeroSummary
           yearBookings={yearBookings}
           totalBookings={totalBookings}
-          year={thisYear}
+          avgRating={avgRating}
         />
       </div>
 
@@ -516,7 +522,7 @@ export default function ClientDashboardHome({
 
 /* ------------ Hero metrics components ------------ */
 
-function DashboardHeroSummary({ yearBookings, totalBookings /*, year */ }) {
+function DashboardHeroSummary({ yearBookings, totalBookings, avgRating }) {
   return (
     <div className="flex flex-col items-center gap-4 mt-4">
       {/* Centered banner image */}
@@ -533,7 +539,7 @@ function DashboardHeroSummary({ yearBookings, totalBookings /*, year */ }) {
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 text-xs sm:text-sm">
           <HeroMetric label="Cleanings this year" value={yearBookings} />
           <HeroMetric label="All-time cleanings" value={totalBookings} />
-          <HeroMetric label="Feedback" value="5.0" icon={Star} />
+          <HeroMetric label="Your rating" value={avgRating ?? "—"} icon={Star} />
         </div>
       </div>
     </div>

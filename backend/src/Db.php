@@ -138,8 +138,8 @@ final class Db
                     $this->pdo->rollBack();
                 }
                 $isDeadlock = $e instanceof \PDOException && in_array((string) ($e->errorInfo[1] ?? ''), ['1213', '1205'], true);
-                if ($isDeadlock && $attempt < 3) {
-                    usleep(50000 * $attempt);
+                if ($isDeadlock && $attempt < 5) {
+                    usleep(random_int(20000, 80000) * $attempt);
                     continue;
                 }
                 throw $e;

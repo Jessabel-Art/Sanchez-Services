@@ -11,7 +11,7 @@ import { useAdminAuth } from "./hooks/useAdminAuth";
 function formatDate(ts) {
   const d = ts ? new Date(ts) : null;
   if (!d) return "";
-  return d.toLocaleDateString(undefined, {
+  return d.toLocaleDateString("en-US", { timeZone: "America/New_York", 
     month: "short",
     day: "2-digit",
     year: "numeric",

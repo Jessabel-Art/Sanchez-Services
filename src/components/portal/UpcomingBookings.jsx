@@ -31,7 +31,7 @@ function toDate(tsLike) {
 function formatDate(tsLike) {
   const d = toDate(tsLike);
   if (!d || Number.isNaN(d.getTime())) return "TBD";
-  return d.toLocaleDateString(undefined, {
+  return d.toLocaleDateString("en-US", { timeZone: "America/New_York", 
     year: "numeric",
     month: "short",
     day: "numeric",
@@ -41,7 +41,7 @@ function formatDate(tsLike) {
 function formatTime(tsLike) {
   const d = toDate(tsLike);
   if (!d || Number.isNaN(d.getTime())) return "";
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return d.toLocaleTimeString("en-US", { timeZone: "America/New_York",  hour: "2-digit", minute: "2-digit" });
 }
 
 const money = (n) =>
@@ -50,7 +50,8 @@ const money = (n) =>
     currency: "USD",
   });
 
-const CANCELLATION_WINDOW_HOURS = 48;
+// Must match business.client_change_cutoff_hours on the server (Terms of Service: 24 hours).
+const CANCELLATION_WINDOW_HOURS = 24;
 
 // ICS helpers for calendar download
 function formatIcsDate(d) {
@@ -72,7 +73,7 @@ function buildIcsFromBooking(booking) {
 
   const summary = booking.service || "Cleaning appointment";
   const address =
-    booking.address ||
+    booking.addressText ||
     booking.addressLine ||
     booking.fullAddress ||
     "Customer address on file";
@@ -232,7 +233,7 @@ export default function UpcomingBookings({
     const endDate = toDate(b.endAt);
 
     const address =
-      b.address ||
+      b.addressText ||
       b.fullAddress ||
       (b.street && `${b.street}${b.city ? `, ${b.city}` : ""}`) ||
       "On file";
@@ -536,9 +537,10 @@ export default function UpcomingBookings({
                   const now = new Date();
 
                   if (now <= freeCancelUntil) {
-                    cancelMessage = `Free to cancel until ${freeCancelUntil.toLocaleString(
-                      [],
+                    cancelMessage = `You can cancel or reschedule online until ${freeCancelUntil.toLocaleString(
+                      "en-US",
                       {
+                        timeZone: "America/New_York",
                         month: "short",
                         day: "numeric",
                         hour: "2-digit",
@@ -547,7 +549,7 @@ export default function UpcomingBookings({
                     )}`;
                   } else {
                     cancelMessage =
-                      "Deposit will be forfeited if this appointment is cancelled.";
+                      "Within 24 hours of the appointment — please contact us to make changes. Late cancellations may forfeit the deposit.";
                   }
                 }
 

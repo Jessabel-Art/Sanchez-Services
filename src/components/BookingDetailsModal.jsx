@@ -20,7 +20,7 @@ function toDate(tsLike) {
 
 function formatDate(d) {
   if (!d) return "TBD";
-  return d.toLocaleDateString(undefined, {
+  return d.toLocaleDateString("en-US", { timeZone: "America/New_York", 
     year: "numeric",
     month: "short",
     day: "numeric",
@@ -29,7 +29,7 @@ function formatDate(d) {
 
 function formatTime(d) {
   if (!d) return "";
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return d.toLocaleTimeString("en-US", { timeZone: "America/New_York",  hour: "2-digit", minute: "2-digit" });
 }
 
 function money(n) {

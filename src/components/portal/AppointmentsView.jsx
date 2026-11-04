@@ -25,7 +25,7 @@ function toDate(tsLike) {
 function formatDate(tsLike) {
   const d = toDate(tsLike);
   if (!d || Number.isNaN(d.getTime())) return "TBD";
-  return d.toLocaleDateString(undefined, {
+  return d.toLocaleDateString("en-US", { timeZone: "America/New_York", 
     year: "numeric",
     month: "long",
     day: "numeric",
@@ -35,7 +35,7 @@ function formatDate(tsLike) {
 function formatTime(tsLike) {
   const d = toDate(tsLike);
   if (!d || Number.isNaN(d.getTime())) return "";
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return d.toLocaleTimeString("en-US", { timeZone: "America/New_York",  hour: "2-digit", minute: "2-digit" });
 }
 
 function money(n) {
@@ -64,7 +64,7 @@ function generateAppointmentPrintView(booking) {
     : "TBD";
 
   const address =
-    booking.address ||
+    booking.addressText ||
     booking.fullAddress ||
     booking.street ||
     "On file";
@@ -254,7 +254,7 @@ function generateAppointmentPrintView(booking) {
 /*                               POLICY CARD UI                                */
 /* -------------------------------------------------------------------------- */
 
-function CancellationPolicyCard({ cancellationWindowHours = 48 }) {
+function CancellationPolicyCard({ cancellationWindowHours = 24 }) {
   return (
     <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 shadow-sm mb-4">
       <p className="text-xs font-semibold text-amber-900 flex items-center gap-2">
@@ -287,7 +287,7 @@ export default function AppointmentsView({
   onViewPayments,
   onReviewBooking,
   depositAmount = 50,
-  cancellationWindowHours = 48,
+  cancellationWindowHours = 24,
 }) {
   const defaultTab =
     upcomingBookings?.length > 0 ? "upcoming" : "completed";

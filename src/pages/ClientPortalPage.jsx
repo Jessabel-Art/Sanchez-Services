@@ -133,7 +133,7 @@ function formatDate(tsLike) {
   try {
     if (!tsLike) return "TBD";
     const d = tsLike?.toDate ? tsLike.toDate() : new Date(tsLike);
-    return d.toLocaleDateString(undefined, {
+    return d.toLocaleDateString("en-US", { timeZone: "America/New_York", 
       year: "numeric",
       month: "long",
       day: "numeric",
@@ -147,7 +147,7 @@ function formatDateTime(tsLike) {
   try {
     if (!tsLike) return "TBD";
     const d = tsLike?.toDate ? tsLike.toDate() : new Date(tsLike);
-    return d.toLocaleString();
+    return d.toLocaleString("en-US", { timeZone: "America/New_York" });
   } catch {
     return "TBD";
   }
@@ -416,9 +416,9 @@ export default function ClientPortalPage() {
         rawStatus: b.status,
         friendly: statusLabel(b.status),
         service: b.serviceName,
-        addressLine: b.address?.line1 || "",
-        addressZip: b.address?.zip || "",
-        notes: [b.accessNotes, b.cleanerNotes].filter(Boolean).join("\n"),
+        addressLine: b.addressText || "",
+        addressZip: "",
+        notes: b.cleanerNotes || "",
         frequency: b.frequency || "one-time",
         addons: b.addons || [],
         depositAmount: b.depositAmount,
@@ -549,7 +549,7 @@ export default function ClientPortalPage() {
         navigate("/book");
         break;
       case "update-notes":
-        apiPatch(`/bookings/${encodeURIComponent(b.id)}/notes`, { accessNotes: booking.notes ?? "" })
+        apiPatch(`/bookings/${encodeURIComponent(b.id)}/notes`, { cleanerNotes: booking.notes ?? "" })
           .then(() => showToast({ title: "Notes saved" }), fail("Could not save notes"));
         break;
       case "download-pdf":

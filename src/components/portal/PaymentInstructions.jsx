@@ -219,7 +219,7 @@ const PaymentInstructions = ({ paymentInfo, onStripePay }) => {
           <div>
             <p>
               {P.notes ||
-                "Deposits are non-refundable but can usually be transferred once to a new date if you reschedule with at least 48 hours’ notice, according to the cancellation policy you agreed to when booking."}
+                "Deposits are non-refundable but can usually be transferred once to a new date if you reschedule with at least 24 hours’ notice, according to the cancellation policy you agreed to when booking."}
             </p>
             {P.extraNotice && (
               <p className="mt-1 text-xs text-plum/65">{P.extraNotice}</p>

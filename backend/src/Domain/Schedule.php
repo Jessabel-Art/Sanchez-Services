@@ -57,8 +57,12 @@ final class Schedule
         $dates = array_values(array_unique($dates));
         sort($dates);
         foreach ($dates as $d) {
-            $this->db->run('INSERT IGNORE INTO booking_day_locks (business_date, version) VALUES (?, 0)', [$d]);
-            $this->db->one('SELECT version FROM booking_day_locks WHERE business_date = ? FOR UPDATE', [$d]);
+            // Lock the existing row; only insert when the day has never been locked before (the insert's
+            // gap lock is what deadlocks under heavy concurrency — Db::transaction retries those).
+            if ($this->db->one('SELECT version FROM booking_day_locks WHERE business_date = ? FOR UPDATE', [$d]) === null) {
+                $this->db->run('INSERT IGNORE INTO booking_day_locks (business_date, version) VALUES (?, 0)', [$d]);
+                $this->db->one('SELECT version FROM booking_day_locks WHERE business_date = ? FOR UPDATE', [$d]);
+            }
         }
     }
 
