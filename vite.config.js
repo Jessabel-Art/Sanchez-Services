@@ -3,6 +3,22 @@ import react from '@vitejs/plugin-react';
 import { createLogger, defineConfig } from 'vite';
 
 const isDev = process.env.NODE_ENV !== 'production';
+
+// Backend selection. Default ("firebase") is the current production setup and is unchanged.
+// VITE_BACKEND=php swaps the Firebase SDK for the PHP backend shim (src/lib/php-backend/*),
+// so existing components keep their imports and behavior.
+const usePhpBackend = process.env.VITE_BACKEND === 'php';
+if (usePhpBackend) {
+	process.env.VITE_SWEEP_URL ||= '/api/sweepCompleteBookings';
+}
+const phpBackendAliases = usePhpBackend
+	? [
+		{ find: /^firebase\/app$/, replacement: path.resolve(__dirname, './src/lib/php-backend/app.js') },
+		{ find: /^firebase\/auth$/, replacement: path.resolve(__dirname, './src/lib/php-backend/auth.js') },
+		{ find: /^firebase\/firestore$/, replacement: path.resolve(__dirname, './src/lib/php-backend/firestore.js') },
+		{ find: /^firebase\/functions$/, replacement: path.resolve(__dirname, './src/lib/php-backend/functions.js') },
+	]
+	: [];
 let inlineEditPlugin, editModeDevPlugin;
 
 if (isDev) {
@@ -198,6 +214,10 @@ export default defineConfig({
 	],
 	server: {
 		cors: true,
+		// Local development against a PHP API (e.g. `php -S 127.0.0.1:8000 ...`): VITE_API_PROXY=http://127.0.0.1:8000
+		...(usePhpBackend && process.env.VITE_API_PROXY
+			? { proxy: { '/api': { target: process.env.VITE_API_PROXY, changeOrigin: false } } }
+			: {}),
 		headers: {
 			'Cross-Origin-Embedder-Policy': 'credentialless',
 		},
@@ -205,9 +225,10 @@ export default defineConfig({
 	},
 	resolve: {
 		extensions: ['.jsx', '.js', '.tsx', '.ts', '.json', ],
-		alias: {
-			'@': path.resolve(__dirname, './src'),
-		},
+		alias: [
+			...phpBackendAliases,
+			{ find: '@', replacement: path.resolve(__dirname, './src') },
+		],
 	},
 	build: {
 		rollupOptions: {
