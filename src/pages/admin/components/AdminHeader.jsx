@@ -1,7 +1,6 @@
 // src/pages/admin/components/AdminHeader.jsx
 import React from "react";
-import { signOut } from "firebase/auth";
-import { auth } from "../../../lib/firebase";
+import { useAuth } from "@/context/AuthContext";
 import { LogOut, Menu, X } from "lucide-react";
 import { useContext } from "react";
 import { AdminUIContext } from "../context/AdminUIContext";
@@ -19,11 +18,12 @@ const VIEW_TITLES = {
 };
 
 const AdminHeader = ({ activeView, user }) => {
+  const { signOut } = useAuth();
     const { mobileMenuOpen, setMobileMenuOpen } = useContext(AdminUIContext);
   // search removed from header
 
   const handleLogout = async () => {
-    await signOut(auth);
+    await signOut();
   };
 
   return (

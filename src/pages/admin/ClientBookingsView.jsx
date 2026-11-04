@@ -1,15 +1,8 @@
 // src/pages/admin/ClientBookingsView.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import {
-  collection,
-  getDocs,
-  orderBy,
-  query,
-  where,
-} from "firebase/firestore";
-
-import { db } from "@/lib/firebase";
+import { apiGet, qs } from "@/lib/api";
+import { normalizeBooking as normalizeApiBooking } from "@/lib/model";
 import { derivePaymentInfo } from "@/lib/payments";
 import { useAdminAuth } from "./hooks/useAdminAuth";
 
@@ -73,47 +66,7 @@ function toDateLike(v) {
 }
 
 function normalizeBooking(b) {
-  const raw = b.raw || b || {};
-  const scheduled = toDateLike(b.startAt ?? b.scheduledAt ?? b.date ?? raw.startAt ?? raw.scheduledAt ?? raw.date);
-  return {
-    ...b,
-    scheduledAt: scheduled,
-    startAt: b.startAt ?? raw.startAt,
-    date: b.date ?? raw.date,
-    amount: Number(
-      b.totalPrice ??
-        raw.totalPrice ??
-        b.totalAmount ??
-        raw.totalAmount ??
-        b.total ??
-        raw.total ??
-        b.amount ??
-        b.price ??
-        b.cost ??
-        raw.amount ??
-        raw.price ??
-        raw.cost ??
-        raw.estimate?.total ??
-        0
-    ),
-    totalPrice: b.totalPrice ?? raw.totalPrice,
-    totalAmount: b.totalAmount ?? raw.totalAmount,
-    depositAmount: Number(b.depositAmount ?? raw.depositAmount ?? 0),
-    depositPaid: !!(b.depositPaid ?? raw.depositPaid),
-    paidAmount: Number(b.paidAmount ?? raw.paidAmount ?? b.amountPaid ?? raw.amountPaid ?? raw.paid ?? 0),
-    amountPaid: Number(b.amountPaid ?? raw.amountPaid ?? b.paidAmount ?? raw.paidAmount ?? raw.paid ?? 0),
-    remainingDue: b.remainingDue ?? raw.remainingDue,
-    balanceDue: b.balanceDue ?? raw.balanceDue,
-    remainingBalance: b.remainingBalance ?? raw.remainingBalance,
-    paymentStatus: b.paymentStatus ?? raw.paymentStatus,
-    refunded: !!(b.refunded ?? raw.refunded),
-    refundedAmount: Number(b.refundedAmount ?? raw.refundedAmount ?? 0),
-    balancePaymentMethod: b.balancePaymentMethod ?? raw.balancePaymentMethod,
-    paymentMethod: b.paymentMethod ?? raw.paymentMethod,
-    depositPaymentMethod: b.depositPaymentMethod ?? raw.depositPaymentMethod,
-    stripePaymentIntentId: b.stripePaymentIntentId ?? raw.stripePaymentIntentId,
-    stripeSessionId: b.stripeSessionId ?? raw.stripeSessionId,
-  };
+  return { ...b, amount: Number(b.totalPrice || 0), paidAmount: b.amountPaid, remainingDue: b.balanceDue, refundedAmount: b.amountRefunded };
 }
 
 export default function ClientBookingsView() {
@@ -172,14 +125,9 @@ export default function ClientBookingsView() {
       setError(null);
 
       try {
-        const qRef = query(
-          collection(db, "bookings"),
-          where("contact.emailLower", "==", emailLower),
-          orderBy("startAt", "desc")
-        );
-        const snap = await getDocs(qRef);
-        const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-        setBookings(rows);
+        const clientId = search.get("clientId");
+        const { bookings: rows } = await apiGet(`/admin/bookings${qs({ all: 1, ...(clientId ? { userId: clientId } : { email: emailLower }) })}`);
+        setBookings(rows.map(normalizeApiBooking));
       } catch (e) {
         console.error("Error loading client bookings", e);
         setError(e?.message || String(e));
@@ -213,7 +161,7 @@ export default function ClientBookingsView() {
 
     bookings.forEach((b) => {
       const status = String(b.status || "").toLowerCase();
-      const amt = Number(b.amount || 0);
+      const amt = Number(b.totalPrice || 0);
 
       if (["confirmed", "completed"].includes(status)) {
         totalAmount += amt;
@@ -324,7 +272,7 @@ export default function ClientBookingsView() {
         b.startAt?.toDate?.() || b.scheduledAt?.toDate?.() || null;
       const dateStr = start ? start.toLocaleString() : "";
       const service = b.serviceName || b.service || "";
-      const amt = Number(b.amount || 0);
+      const amt = Number(b.totalPrice || 0);
       const status = b.status || "";
       const payment = derivePaymentInfo(normalizeBooking(b));
       return [

@@ -1,8 +1,8 @@
 // src/pages/admin/ClientsView.jsx
 import React, { useEffect, useState, useMemo } from "react";
 import { formatPhoneForDisplay } from "@/lib/contactModel";
-import { db } from "@/lib/firebase";
-import { collection, getDocs, query, orderBy } from "firebase/firestore";
+import { apiGet } from "@/lib/api";
+import { useApiQuery } from "@/hooks/useApiQuery";
 import { useAdminAuth } from "./hooks/useAdminAuth";
 
 import { Button } from "@/components/ui/button";
@@ -85,24 +85,19 @@ export default function ClientsView() {
 
   const navigate = useNavigate();
 
-  // Load profiles (auth-gated)
-  useEffect(() => {
-    const loadProfiles = async () => {
-      // Only load when auth is ready and user is confirmed admin
-      if (!authReady || !isAdmin) {
-        return;
-      }
-
-      const qRef = query(collection(db, "profiles"), orderBy("createdAt", "desc"));
-      const snap = await getDocs(qRef);
-      const items = snap.docs.map((d) => ({
-        id: d.id,
-        ...d.data(),
-      }));
-      setProfiles(items);
-    };
-    loadProfiles();
-  }, [authReady, isAdmin]);
+  // Clients with stats computed on the server (paid totals from the payment ledger)
+  const clientsQ = useApiQuery(
+    async () =>
+      (await apiGet("/admin/clients")).clients.map((c) => ({
+        ...c,
+        ltv: c.lifetimePaid,
+        createdAt: c.createdAt ? new Date(c.createdAt) : null,
+        lastBookingAt: c.lastBookingAt ? new Date(c.lastBookingAt) : null,
+      })),
+    [],
+    { enabled: authReady && isAdmin }
+  );
+  const profiles = clientsQ.data || [];
 
   // Segment logic
   const getSegments = (profile) => {
@@ -148,8 +143,8 @@ export default function ClientsView() {
         B = formatAddressSummary(b);
       }
 
-      if (A?.toDate) A = A.toDate();
-      if (B?.toDate) B = B.toDate();
+      if (A == null) A = "";
+      if (B == null) B = "";
 
       if (typeof A === "string") A = A.toLowerCase();
       if (typeof B === "string") B = B.toLowerCase();
@@ -327,7 +322,7 @@ export default function ClientsView() {
                         className="bg-plum text-white cursor-pointer hover:bg-plum/80 hover:shadow-md transition-all"
                         onClick={() =>
                           navigate(
-                            `/admin/client-bookings?email=${encodeURIComponent(
+                            `/admin/client-bookings?clientId=${p.id}&email=${encodeURIComponent(
                               p.email || ""
                             )}&name=${encodeURIComponent(displayName || "")}`
                           )

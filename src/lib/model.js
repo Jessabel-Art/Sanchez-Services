@@ -11,6 +11,27 @@ export function toDate(v) {
 
 export const toMillis = (v) => toDate(v)?.getTime() ?? 0;
 
+/** A real Date that also answers the timestamp-style calls older components make (toDate/toMillis/seconds). */
+export class ApiDate extends Date {
+  toDate() {
+    return new Date(this.getTime());
+  }
+  toMillis() {
+    return this.getTime();
+  }
+  get seconds() {
+    return Math.floor(this.getTime() / 1000);
+  }
+  get nanoseconds() {
+    return (this.getTime() % 1000) * 1e6;
+  }
+}
+
+export const apiDate = (v) => {
+  const d = toDate(v);
+  return d ? new ApiDate(d.getTime()) : null;
+};
+
 const DATE_FIELDS = ["startAt", "endAt", "createdAt", "updatedAt", "confirmedAt", "cancelledAt", "completedAt", "holdExpiresAt"];
 
 /** Converts a booking from the API into the shape the UI uses (Date objects + convenience fields). */
@@ -18,10 +39,11 @@ export function normalizeBooking(b) {
   if (!b) return b;
   const out = { ...b };
   DATE_FIELDS.forEach((k) => {
-    out[k] = toDate(b[k]);
+    out[k] = apiDate(b[k]);
   });
-  out.payments = (b.payments || []).map((p) => ({ ...p, paidAt: toDate(p.paidAt) }));
-  out.history = (b.history || []).map((h) => ({ ...h, at: toDate(h.at) }));
+  out.scheduledAt = out.startAt;
+  out.payments = (b.payments || []).map((p) => ({ ...p, paidAt: apiDate(p.paidAt) }));
+  out.history = (b.history || []).map((h) => ({ ...h, at: apiDate(h.at) }));
   out.clientName = b.contact?.name || "";
   out.addressText = formatAddress(b.address);
   return out;

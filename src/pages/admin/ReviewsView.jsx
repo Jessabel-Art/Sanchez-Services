@@ -1,17 +1,7 @@
 // src/pages/admin/ReviewsView.jsx
 import React from "react";
-import { db } from "@/lib/firebase";
-import {
-  collection,
-  onSnapshot,
-  orderBy,
-  query,
-  updateDoc,
-  doc,
-  where,
-  serverTimestamp,
-  getDoc,
-} from "firebase/firestore";
+import { apiGet, apiPost } from "@/lib/api";
+import { useApiQuery } from "@/hooks/useApiQuery";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/use-toast";
 import EmptyState from "./components/EmptyState";
@@ -19,7 +9,7 @@ import { Star } from "lucide-react";
 import { useAdminAuth } from "./hooks/useAdminAuth";
 
 function formatDate(ts) {
-  const d = ts?.toDate?.();
+  const d = ts ? new Date(ts) : null;
   if (!d) return "";
   return d.toLocaleDateString(undefined, {
     month: "short",
@@ -49,123 +39,25 @@ export default function ReviewsView() {
   const { toast } = useToast();
   const { user, isAdmin, authReady } = useAdminAuth();
 
-  const [pending, setPending] = React.useState([]);
-  const [approved, setApproved] = React.useState([]);
+  const q = useApiQuery(async () => (await apiGet("/admin/reviews")).reviews, [], { enabled: authReady && isAdmin });
+  const all = q.data || [];
+  const pending = all.filter((r) => r.status === "pending").sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+  const approved = all.filter((r) => r.status === "approved").sort((a, b) => String(b.publishedAt).localeCompare(String(a.publishedAt)));
 
-  const snapshotErrorWarnedRef = React.useRef(false);
-  const adminWarnedRef = React.useRef(false);
-
-  // --- Subscribe to reviews only when admin confirmed ---
-  React.useEffect(() => {
-    if (!authReady || !isAdmin) return;
-
-    const qPending = query(
-      collection(db, "reviews"),
-      where("status", "==", "pending"),
-      orderBy("createdAt", "asc")
-    );
-    const qApproved = query(
-      collection(db, "reviews"),
-      where("status", "==", "approved"),
-      orderBy("publishedAt", "desc")
-    );
-
-    const u1 = onSnapshot(
-      qPending,
-      (snap) => {
-        setPending(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-        snapshotErrorWarnedRef.current = false;
-      },
-      (err) => {
-        if (snapshotErrorWarnedRefRef.current) return;
-        snapshotErrorWarnedRef.current = true;
-        // eslint-disable-next-line no-console
-        console.error("Reviews (pending) subscription error", err);
-        toast({
-          title: "Could not load pending reviews",
-          description: err?.message || String(err),
-          variant: "destructive",
-        });
-      }
-    );
-
-    const u2 = onSnapshot(
-      qApproved,
-      (snap) => {
-        setApproved(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-        snapshotErrorWarnedRef.current = false;
-      },
-      (err) => {
-        if (snapshotErrorWarnedRef.current) return;
-        snapshotErrorWarnedRef.current = true;
-        // eslint-disable-next-line no-console
-        console.error("Reviews (approved) subscription error", err);
-        toast({
-          title: "Could not load approved reviews",
-          description: err?.message || String(err),
-          variant: "destructive",
-        });
-      }
-    );
-
-    return () => {
-      u1();
-      u2();
-    };
-  }, [authReady, isAdmin, toast]);
-
-  const approve = async (r) => {
+  const moderate = async (r, action) => {
     try {
-      const ref = doc(db, "reviews", r.id);
-      const snap = await getDoc(ref);
-      if (!snap.exists()) throw new Error("Review not found");
-
-      const data = snap.data();
-      const createdAt = data.createdAt || serverTimestamp();
-
-      await updateDoc(ref, {
-        status: "approved",
-        publishedAt: serverTimestamp(),
-        createdAt, // ensure field exists for orderBy
-        updatedAt: serverTimestamp(),
-      });
-
+      await apiPost(`/admin/reviews/${r.id}/${action}`, {});
       toast({
-        title: "Review approved",
-        description: `${r.displayName || r.name || "Client"}'s review is now live.`,
+        title: action === "approve" ? "Review approved" : "Review declined",
+        description: action === "approve" ? `${r.displayName || "Client"}'s review is now live.` : `${r.displayName || "Client"}'s review was declined.`,
       });
     } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error("Approve failed:", err);
-      toast({
-        title: "Could not approve review",
-        description: err?.message || String(err),
-        variant: "destructive",
-      });
+      toast({ title: "Could not update review", description: err?.message || String(err), variant: "destructive" });
     }
   };
+  const approve = (r) => moderate(r, "approve");
+  const decline = (r) => moderate(r, "decline");
 
-  const decline = async (r) => {
-    try {
-      const ref = doc(db, "reviews", r.id);
-      await updateDoc(ref, {
-        status: "declined",
-        updatedAt: serverTimestamp(),
-      });
-      toast({
-        title: "Review declined",
-        description: `${r.displayName || r.name || "Client"}'s review was declined.`,
-      });
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error("Decline failed:", err);
-      toast({
-        title: "Could not decline review",
-        description: err?.message || String(err),
-        variant: "destructive",
-      });
-    }
-  };
 
   const renderPendingList = () => {
     if (pending.length === 0) {
@@ -202,7 +94,7 @@ export default function ReviewsView() {
                     )}
                   </div>
                   <div className="text-xs text-plum/60">
-                    Internal: clientId {r.clientId || r.userId || "unknown"}
+                    Client: {r.clientName || "unknown"} · booking {r.bookingId || "—"}
                     {service ? ` • ${service}` : ""}
                   </div>
                 </div>
