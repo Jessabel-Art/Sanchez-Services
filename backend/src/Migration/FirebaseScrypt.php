@@ -6,8 +6,8 @@ namespace SanchezServices\Migration;
 /**
  * Verifier for Firebase Auth's modified scrypt password hashes — COMPATIBILITY TOOL ONLY.
  *
- * It is NOT wired into login. Use bin/check-firebase-password-hash.php to validate it against a
- * real test account from the production Firebase project before any decision to rely on it.
+ * Used by login only when auth.firebase_scrypt is configured (off by default). Validate it first with
+ * bin/check-firebase-password-hash.php against a real test account from the production Firebase project.
  *
  * Algorithm (github.com/firebase/scrypt):
  *   key  = scrypt(password, salt || saltSeparator, N = 2^memCost, r = rounds, p = 1, dkLen = 32)

@@ -133,6 +133,12 @@ final class AuthService
             throw new HttpError('auth/too-many-requests', 'Access to this account has been temporarily disabled due to many failed login attempts. You can reset your password or try again later.');
         }
         $ok = Passwords::verify($password, $row['password_hash'] ?? null);
+        if (!$ok && $row && ($row['password_hash'] ?? null) === null && $this->verifyLegacyFirebase($password, $row)) {
+            // Imported Firebase password: upgrade to a native hash on first successful sign-in.
+            $this->users->update((int) $row['id'], ['password_hash' => Passwords::hash($password), 'legacy_password_hash' => null, 'legacy_password_salt' => null]);
+            $row = (array) $this->users->rowById((int) $row['id']);
+            $ok = true;
+        }
         if (!$row || !$ok || (int) $row['is_active'] !== 1) {
             if ($row) {
                 $fails = (int) $row['failed_logins'] + 1;
@@ -143,7 +149,8 @@ final class AuthService
                 }
                 $this->users->update((int) $row['id'], $set);
             }
-            if ($row && ($row['password_hash'] ?? null) === null && (int) $row['is_active'] === 1) {
+            $legacyUsable = $row && !empty($row['legacy_password_hash']) && !empty($this->config->get('auth.firebase_scrypt.signer_key'));
+            if ($row && ($row['password_hash'] ?? null) === null && !$legacyUsable && (int) $row['is_active'] === 1) {
                 // Imported account without a native password yet.
                 throw new HttpError('auth/password-reset-required', 'Please use "Forgot password" to set a new password for your account.');
             }
@@ -154,6 +161,32 @@ final class AuthService
             $row = (array) $this->users->rowById((int) $row['id']);
         }
         return $this->signIn($row);
+    }
+
+    /**
+     * Optional compatibility path (migration decision D1): only active when the Firebase project's
+     * password-hash parameters are configured (auth.firebase_scrypt.signer_key, salt_separator, rounds, mem_cost)
+     * and the importer stored the user's legacy hash (--with-legacy-password-hashes).
+     */
+    private function verifyLegacyFirebase(string $password, array $row): bool
+    {
+        $p = (array) $this->config->get('auth.firebase_scrypt', []);
+        if (empty($p['signer_key']) || empty($row['legacy_password_hash']) || empty($row['legacy_password_salt']) || strlen($password) > 1024) {
+            return false;
+        }
+        try {
+            return \SanchezServices\Migration\FirebaseScrypt::verify(
+                $password,
+                (string) $row['legacy_password_hash'],
+                (string) $row['legacy_password_salt'],
+                (string) $p['signer_key'],
+                (string) ($p['salt_separator'] ?? 'Bw=='),
+                (int) ($p['rounds'] ?? 8),
+                (int) ($p['mem_cost'] ?? 14)
+            );
+        } catch (\Throwable) {
+            return false;
+        }
     }
 
     public function logout(): void

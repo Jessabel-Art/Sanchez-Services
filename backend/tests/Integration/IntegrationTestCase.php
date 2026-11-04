@@ -65,6 +65,8 @@ abstract class IntegrationTestCase extends TestCase
             'jobs' => ['runner_token' => str_repeat('j', 40)],
             'logging' => ['path' => "{$dir}/logs"],
             'security' => ['rate_limit_multiplier' => 50],
+            // Test-only Firebase scrypt parameters (small mem_cost keeps tests fast).
+            'auth' => ['firebase_scrypt' => ['signer_key' => base64_encode(str_repeat('k', 32)), 'salt_separator' => 'Bw==', 'rounds' => 8, 'mem_cost' => 4]],
         ];
         $configFile = "{$dir}/config.php";
         file_put_contents($configFile, '<?php return ' . var_export($config, true) . ';');
