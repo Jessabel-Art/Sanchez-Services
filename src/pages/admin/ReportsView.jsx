@@ -2,7 +2,7 @@
 import React from "react";
 import { apiGet, qs } from "@/lib/api";
 import { useApiQuery } from "@/hooks/useApiQuery";
-import { normalizeBooking, dateKey as tzDateKey, formatMoney } from "@/lib/model";
+import { normalizeBooking, dateKey as tzDateKey, formatMoney, statusLabel } from "@/lib/model";
 import { csvDownload, money, rangePreset } from "./utils";
 
 // Recharts
@@ -27,6 +27,8 @@ const STATUS_COLORS = {
   declined: "#ef4444",
   completed: "#8b5cf6",
   cancelled: "#f97316",
+  pending_payment: "#fbbf24",
+  expired: "#cbd5e1",
   unknown: "#6b7280",
 };
 
@@ -202,7 +204,8 @@ export default function ReportsView() {
     const cancelledCount = byStatus.get("cancelled") || 0;
 
     const statusData = Array.from(byStatus.entries()).map(([name, count]) => ({
-      name,
+      name: statusLabel(name),
+      key: name,
       value: count,
     }));
 
@@ -481,7 +484,7 @@ export default function ReportsView() {
                       paddingAngle={3}
                     >
                       {analytics.statusData.map((entry, index) => {
-                        const key = entry.name;
+                        const key = entry.key;
                         const color =
                           STATUS_COLORS[key] ||
                           FALLBACK_COLORS[index % FALLBACK_COLORS.length];
@@ -498,7 +501,7 @@ export default function ReportsView() {
               <ul className="ml-4 space-y-1 text-xs">
                 {analytics.statusData.map((s, idx) => {
                   const color =
-                    STATUS_COLORS[s.name] ||
+                    STATUS_COLORS[s.key] ||
                     FALLBACK_COLORS[idx % FALLBACK_COLORS.length];
                   return (
                     <li key={s.name} className="flex items-center gap-2">

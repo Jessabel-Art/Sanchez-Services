@@ -48,13 +48,12 @@ jobs:
         with:
           node-version: 20
           cache: npm
-      - name: Frontend tests and both builds
+      - name: Frontend tests and build (no Firebase SDK may remain in the bundle)
         run: |
           npm ci
           npx vitest --run
-          npx vite build --outDir /tmp/dist-firebase
-          VITE_BACKEND=php npx vite build --outDir /tmp/dist-php
-          ! grep -q "firestore.googleapis.com" /tmp/dist-php/assets/*.js
+          npx vite build --outDir /tmp/dist
+          ! grep -q "firestore.googleapis.com\|identitytoolkit.googleapis.com" /tmp/dist/assets/*.js
       - name: JS parity fixtures are current
         run: |
           npm --prefix functions ci

@@ -11,22 +11,11 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
 
-    # All VITE_* used during build go here
+    # Safety gate: the new frontend needs the PHP API to be live on the server first.
+    # Set the repository variable PHP_BACKEND_READY=true only after the backend, database and
+    # config are in place (see docs/CUTOVER_RUNBOOK.md). Until then this job refuses to publish.
     env:
-      VITE_FIREBASE_API_KEY: ${{ vars.VITE_FIREBASE_API_KEY }}
-      VITE_FIREBASE_AUTH_DOMAIN: ${{ vars.VITE_FIREBASE_AUTH_DOMAIN }}
-      VITE_FIREBASE_PROJECT_ID: ${{ vars.VITE_FIREBASE_PROJECT_ID }}
-      VITE_FIREBASE_STORAGE_BUCKET: ${{ vars.VITE_FIREBASE_STORAGE_BUCKET }}
-      VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ vars.VITE_FIREBASE_MESSAGING_SENDER_ID }}
-      VITE_FIREBASE_APP_ID: ${{ vars.VITE_FIREBASE_APP_ID }}
-
-      # Your app-specific vars (add these in repo Settings → Secrets and variables → Actions → Variables)
-      VITE_RECAPTCHA_SITE_KEY: ${{ vars.VITE_RECAPTCHA_SITE_KEY }}
-      VITE_OWNER_UID: ${{ vars.VITE_OWNER_UID }}
-      VITE_SLOT_CAPACITY: ${{ vars.VITE_SLOT_CAPACITY }}
-      VITE_DAILY_CAPACITY: ${{ vars.VITE_DAILY_CAPACITY }}
-      VITE_ADMIN_EMAIL: ${{ vars.VITE_ADMIN_EMAIL }}
-      VITE_BRAND_NAME: ${{ vars.VITE_BRAND_NAME }}
+      SS_APP_ROOT: ${{ vars.SS_APP_ROOT }}   # absolute path of ss-app on the server, e.g. /home/<user>/ss-app
 
     steps:
       - name: Checkout source
@@ -38,10 +27,25 @@ jobs:
           node-version: 20
           cache: npm
 
+      - name: Refuse to publish before the PHP backend is ready
+        if: ${{ vars.PHP_BACKEND_READY != 'true' }}
+        run: |
+          echo "PHP_BACKEND_READY is not 'true' — not publishing. See docs/CUTOVER_RUNBOOK.md." >&2
+          exit 1
+
       - name: Install & build
         run: |
           npm ci
           npm run build
+
+      - name: Add the PHP API front controller to the web root
+        run: |
+          test -n "$SS_APP_ROOT" || { echo "Set repository variable SS_APP_ROOT" >&2; exit 1; }
+          mkdir -p dist/api
+          cp backend/public/api/index.php backend/public/api/.htaccess dist/api/
+          printf "<?php\nreturn %s;\n" "'$SS_APP_ROOT'" > dist/api/app-root.php
+          test -f dist/.htaccess && grep -q "RewriteRule ^api/ - \[L\]" dist/.htaccess
+          ! grep -rq "firestore.googleapis.com" dist/assets/
 
       - name: Push dist to deploy branch
         uses: JamesIves/github-pages-deploy-action@v4

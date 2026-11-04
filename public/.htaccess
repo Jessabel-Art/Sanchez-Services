@@ -1,6 +1,12 @@
+# Web-root .htaccess (copied into every build from public/). Same SPA rewrite and caching as before,
+# except /api/* goes to the PHP front controller and is never cached.
 <IfModule mod_rewrite.c>
   RewriteEngine On
   RewriteBase /
+  # HTTPS (enable once SSL is confirmed active on the domain)
+  # RewriteCond %{HTTPS} !=on
+  # RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+  RewriteRule ^api/ - [L]
   RewriteCond %{REQUEST_FILENAME} !-f
   RewriteCond %{REQUEST_FILENAME} !-d
   RewriteRule ^ index.html [L]
@@ -8,12 +14,27 @@
 
 <IfModule mod_headers.c>
   Header set X-Powered-By "Hostinger Horizons"
-
-  # Cache everything on CDN by default
-  Header set Cache-Control "public, s-maxage=604800, max-age=0"
-  
-  # Cache in browser all assets
-  <If "%{REQUEST_URI} =~ m#^/assets/.*$#">
-    Header set Cache-Control "public, max-age=604800"
+  # Security headers (must come before the <If>/<Else> block to apply to every response)
+  Header set X-Content-Type-Options "nosniff"
+  Header set Referrer-Policy "strict-origin-when-cross-origin"
+  Header set X-Frame-Options "SAMEORIGIN"
+  Header set Permissions-Policy "camera=(), microphone=(), geolocation=()"
+  # Enable after HTTPS is confirmed on the domain:
+  # Header always set Strict-Transport-Security "max-age=31536000"
+  <If "%{REQUEST_URI} =~ m#^/api/#">
+    Header onsuccess unset Cache-Control
+    Header always set Cache-Control "no-store, private"
   </If>
+  <Else>
+    # Cache everything on CDN by default (unchanged from the current site)
+    Header set Cache-Control "public, s-maxage=604800, max-age=0"
+    <If "%{REQUEST_URI} =~ m#^/assets/.*$#">
+      Header set Cache-Control "public, max-age=604800"
+    </If>
+  </Else>
 </IfModule>
+
+# Never serve dotfiles or backups if they ever land in the web root
+<FilesMatch "(^\.(?!well-known)|\.(bak|sql|log|ndjson|env)$)">
+  Require all denied
+</FilesMatch>
